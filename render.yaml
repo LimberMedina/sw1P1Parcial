@@ -4,7 +4,7 @@ services:
     name: uml-editor-backend
     env: node
     plan: free
-    buildCommand: cd backend && npm install && npx prisma generate && npx prisma migrate deploy && npm run build
+    buildCommand: cd backend && npm install && npx prisma generate && npx prisma migrate deploy && npx nest build
     startCommand: cd backend && npm run start:prod
     envVars:
       - key: NODE_ENV
@@ -29,7 +29,7 @@ services:
   - type: web
     name: uml-editor-frontend
     env: static
-    buildCommand: cd frontend && npm install && npm run build
+    buildCommand: cd frontend && rm -rf node_modules package-lock.json && npm install && npm run build
     staticPublishPath: ./frontend/dist
     envVars:
       - key: VITE_API_URL
