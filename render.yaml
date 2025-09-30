@@ -39,6 +39,7 @@ services:
   - type: redis
     name: uml-editor-redis
     plan: free
+    ipAllowList: []
 
 databases:
   - name: uml-editor-db
