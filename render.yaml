@@ -35,11 +35,13 @@ services:
       - key: VITE_API_URL
         value: https://uml-editor-backend.onrender.com
 
+  # Redis
+  - type: redis
+    name: uml-editor-redis
+    plan: free
+
 databases:
   - name: uml-editor-db
     plan: free
     databaseName: uml_editor
     user: uml_editor_user
-
-  - name: uml-editor-redis
-    plan: free
