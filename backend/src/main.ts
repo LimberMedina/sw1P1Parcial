@@ -7,12 +7,19 @@ async function bootstrap() {
 
   // Habilita CORS para desarrollo y producción
   const corsOrigins = process.env.NODE_ENV === 'production' 
-    ? [process.env.CORS_ORIGIN || 'https://tu-frontend.onrender.com']
+    ? [
+        process.env.CORS_ORIGIN || 'https://uml-editor-frontend-l6hz.onrender.com',
+        'https://uml-editor-frontend-l6hz.onrender.com'
+      ]
     : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+    
+  console.log('🌐 CORS Origins configurados:', corsOrigins);
     
   app.enableCors({
     origin: corsOrigins,
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
 
   app.setGlobalPrefix('api');

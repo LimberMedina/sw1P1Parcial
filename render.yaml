@@ -18,7 +18,7 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: CORS_ORIGIN
-        value: https://uml-editor-frontend.onrender.com
+        value: https://uml-editor-frontend-l6hz.onrender.com
       - key: REDIS_URL
         fromService:
           type: redis
