@@ -29,8 +29,7 @@ services:
   - type: web
     name: uml-editor-frontend
     env: static
-    nodeVersion: 18.18.0
-    buildCommand: cd frontend && rm -rf node_modules package-lock.json yarn.lock && npm install --force && npm run build
+    buildCommand: cd frontend && rm -rf node_modules package-lock.json && npm install && npm run build
     staticPublishPath: ./frontend/dist
     envVars:
       - key: VITE_API_URL
