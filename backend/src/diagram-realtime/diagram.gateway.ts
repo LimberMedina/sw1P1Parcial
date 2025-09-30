@@ -35,13 +35,17 @@ type Snapshot = { nodes: any[]; edges: any[] };
   namespace: '/diagram',
   path: '/socket.io',
   cors: {
-    // En dev, más permisivo para evitar "origin mismatch" al hacer upgrade:
-    origin: [
-      'http://localhost:5173',
-      'http://127.0.0.1:5173',
-      'http://localhost',
-      'http://127.0.0.1',
-    ],
+    origin: process.env.NODE_ENV === 'production' 
+      ? [
+          process.env.CORS_ORIGIN || 'https://uml-editor-frontend-l6hz.onrender.com',
+          'https://uml-editor-frontend-l6hz.onrender.com'
+        ]
+      : [
+          'http://localhost:5173',
+          'http://127.0.0.1:5173',
+          'http://localhost',
+          'http://127.0.0.1',
+        ],
     credentials: true,
   },
   transports: ['websocket', 'polling'],

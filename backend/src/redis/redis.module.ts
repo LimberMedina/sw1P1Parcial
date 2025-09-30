@@ -4,11 +4,18 @@ import Redis, { RedisOptions } from 'ioredis';
 
 function makeRedis(urlEnv?: string) {
   const url = urlEnv ?? 'redis://localhost:6379';
+  console.log(`[Redis] Conectando a: ${url.replace(/\/\/.*@/, '//***:***@')}`); // Log sin credenciales
+  
   const client = new Redis(url, {
     // Evita MaxRetriesPerRequestError al iniciar si Redis demora
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
-    retryStrategy: (times) => Math.min(times * 200, 2000), // backoff hasta 2s
+    retryStrategy: (times) => {
+      const delay = Math.min(times * 200, 2000);
+      console.log(`[Redis] Reintentando conexión en ${delay}ms (intento ${times})`);
+      return delay;
+    },
+    lazyConnect: true, // No conectar automáticamente
   } as RedisOptions);
 
   client.on('error', (err) => {
@@ -18,6 +25,12 @@ function makeRedis(urlEnv?: string) {
   client.on('connect', () => console.log('[Redis] connected'));
   client.on('ready', () => console.log('[Redis] ready'));
   client.on('reconnecting', () => console.log('[Redis] reconnecting...'));
+  client.on('close', () => console.log('[Redis] connection closed'));
+
+  // Conectar explícitamente
+  client.connect().catch(err => {
+    console.error('[Redis] Error al conectar:', err?.message ?? err);
+  });
 
   return client;
 }

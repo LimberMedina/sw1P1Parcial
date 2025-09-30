@@ -38,7 +38,7 @@ export class RealtimeClient {
     const token = opts.authToken ? opts.authToken : "";
     this.socket = io(`${opts.baseUrl}/diagram`, {
       transports: ["polling", "websocket"],
-      path: (import.meta as any).env?.VITE_SOCKET_PATH || "/socket.io",
+      path: "/socket.io",
       auth: { token },
     });
 
