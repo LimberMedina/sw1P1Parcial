@@ -58,9 +58,10 @@ export class AiService {
   constructor() {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
+      console.warn('[AiService] GROQ_API_KEY no configurada, usando respuestas de fallback');
     }
     this.groq = new Groq({
-      apiKey: apiKey || 'gsk_dev_placeholder', // evita hardcodear un key “real”
+      apiKey: apiKey || 'gsk_dev_placeholder', // evita hardcodear un key "real"
     });
   }
 

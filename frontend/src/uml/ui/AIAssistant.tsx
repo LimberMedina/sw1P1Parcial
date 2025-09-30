@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Bot, X, Send, Sparkles, Lightbulb, CheckCircle } from "lucide-react";
 import toast from "react-hot-toast";
+import { api } from "../../lib/api";
 
 interface AIMessage {
   id: string;
@@ -88,23 +89,12 @@ export default function AIAssistant({
     input: string
   ): Promise<{ content: string; suggestions?: any }> => {
     try {
-      // Llamar a la API del backend
-      const response = await fetch("http://localhost:3000/api/ai/analyze-uml", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          userInput: input,
-        }),
+      // Llamar a la API del backend usando la configuración de axios
+      const response = await api.post("/ai/analyze-uml", {
+        userInput: input,
       });
 
-      if (!response.ok) {
-        throw new Error("Error en la respuesta del servidor");
-      }
-
-      const data = await response.json();
-      return data;
+      return response.data;
     } catch (error) {
       console.error("Error al llamar a la API de IA:", error);
 
