@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String          @id @default(uuid())
+  email         String          @unique
+  name          String
+  passwordHash  String
+  role          Role            @default(USER)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  Project       Project[]
+  ProjectMember ProjectMember[]
+
+  editRequests EditRequest[] @relation(name: "UserEditRequests")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  EDITOR
+  USER
+}
+
+enum ProjectRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+model Project {
+  id          String          @id @default(uuid())
+  name        String
+  description String?
+  ownerId     String
+  owner       User            @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  members     ProjectMember[]
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  diagram     Diagram?
+
+  shareLinks   ProjectShareLink[] @relation(name: "ProjectShareLinks")
+  editRequests EditRequest[]      @relation(name: "ProjectEditRequests")
+
+  diagramVersions DiagramVersion[] @relation(name: "ProjectDiagramVersions")
+
+  @@index([ownerId])
+}
+
+model ProjectMember {
+  id        String      @id @default(uuid())
+  projectId String
+  userId    String
+  role      ProjectRole @default(EDITOR)
+  project   Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@unique([projectId, userId])
+  @@index([userId])
+  @@index([projectId])
+}
+
+model Diagram {
+  id        String   @id @default(uuid())
+  projectId String   @unique
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  snapshot  Json // { nodes: [], edges: [], updatedAt }
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model ProjectShareLink {
+  id        String      @id @default(uuid())
+  projectId String
+  token     String      @unique
+  role      ProjectRole @default(VIEWER) // rol concedido por el link
+  expiresAt DateTime?
+  createdAt DateTime    @default(now())
+
+  project Project @relation(name: "ProjectShareLinks", fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+}
+
+model EditRequest {
+  id          String            @id @default(uuid())
+  projectId   String
+  requesterId String // user que pide permiso
+  message     String?
+  status      EditRequestStatus @default(PENDING)
+  createdAt   DateTime          @default(now())
+
+  project   Project @relation(name: "ProjectEditRequests", fields: [projectId], references: [id], onDelete: Cascade)
+  requester User    @relation(name: "UserEditRequests", fields: [requesterId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, requesterId]) // una solicitud activa por user por proyecto
+  @@index([projectId])
+  @@index([requesterId])
+}
+
+enum EditRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model DiagramVersion {
+  id        String   @id @default(cuid())
+  projectId String
+  authorId  String?
+  snapshot  Json
+  createdAt DateTime @default(now())
+
+  Project Project @relation(name: "ProjectDiagramVersions", fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
