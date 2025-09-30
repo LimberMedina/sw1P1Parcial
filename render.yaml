@@ -1,0 +1,45 @@
+services:
+  # Backend API
+  - type: web
+    name: uml-editor-backend
+    env: node
+    plan: free
+    buildCommand: cd backend && npm install && npx prisma generate && npx prisma migrate deploy && npm run build
+    startCommand: cd backend && npm run start:prod
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: uml-editor-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        value: https://uml-editor-frontend.onrender.com
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: uml-editor-redis
+          property: connectionString
+
+  # Frontend
+  - type: web
+    name: uml-editor-frontend
+    env: static
+    buildCommand: cd frontend && npm install && npm run build
+    staticPublishPath: ./frontend/dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://uml-editor-backend.onrender.com
+
+databases:
+  - name: uml-editor-db
+    plan: free
+    databaseName: uml_editor
+    user: uml_editor_user
+
+  - name: uml-editor-redis
+    plan: free

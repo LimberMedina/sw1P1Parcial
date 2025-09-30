@@ -5,9 +5,13 @@ import { ValidationPipe } from '@nestjs/common';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Habilita CORS para el frontend en Vite
+  // Habilita CORS para desarrollo y producción
+  const corsOrigins = process.env.NODE_ENV === 'production' 
+    ? [process.env.CORS_ORIGIN || 'https://tu-frontend.onrender.com']
+    : ['http://localhost:5173', 'http://127.0.0.1:5173'];
+    
   app.enableCors({
-    origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: corsOrigins,
     credentials: true,
   });
 
@@ -21,6 +25,8 @@ async function bootstrap() {
     }),
   );
 
-  await app.listen(3000);
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
+  console.log(`🚀 Servidor ejecutándose en puerto ${port}`);
 }
 bootstrap();
