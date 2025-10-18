@@ -124,27 +124,81 @@ export class JavaSpringGenerator {
     // 1) "nombre: Tipo"
     const colonIdx = raw.indexOf(":");
     if (colonIdx !== -1) {
-      const name = this.sanitizeIdentifier(
+      let name = this.sanitizeIdentifier(
         raw.slice(0, colonIdx).trim(),
         `field_${index + 1}`
       );
-      const type = this.toPascal(
-        this.safeStr(raw.slice(colonIdx + 1), "String")
-      );
+      let type = this.safeStr(raw.slice(colonIdx + 1), "String").trim();
+
+      // ✅ MAPEAR TIPOS A JAVA VÁLIDOS
+      type = this.mapToJavaType(type);
+
+      // ✅ NORMALIZAR NOMBRE
+      name = this.toCamelCase(name);
+
       return { type, name };
     }
 
     // 2) "Tipo nombre"
     const parts = raw.split(/\s+/).filter(Boolean);
     if (parts.length === 2 && this.isJavaType(parts[0])) {
-      const type = parts[0];
-      const name = this.sanitizeIdentifier(parts[1], `field_${index + 1}`);
+      let type = this.mapToJavaType(parts[0]);
+      let name = this.sanitizeIdentifier(parts[1], `field_${index + 1}`);
+      name = this.toCamelCase(name);
       return { type, name };
     }
 
     // 3) "nombre" => String
-    const name = this.sanitizeIdentifier(raw, `field_${index + 1}`);
+    let name = this.sanitizeIdentifier(raw, `field_${index + 1}`);
+    name = this.toCamelCase(name);
     return { type: "String", name };
+  }
+
+  // ✅ AGREGAR método para mapear tipos:
+  private mapToJavaType(type: string): string {
+    const typeMap: Record<string, string> = {
+      // Tipos comunes del diagrama -> Java
+      int: "Integer",
+      Int: "Integer",
+      integer: "Integer",
+      Integer: "Integer",
+
+      long: "Long",
+      Long: "Long",
+
+      string: "String",
+      String: "String",
+      text: "String",
+      Text: "String",
+
+      double: "Double",
+      Double: "Double",
+      float: "Float",
+      Float: "Float",
+
+      decimal: "BigDecimal",
+      Decimal: "BigDecimal",
+      money: "BigDecimal",
+      currency: "BigDecimal",
+
+      bool: "Boolean",
+      Bool: "Boolean",
+      boolean: "Boolean",
+      Boolean: "Boolean",
+
+      date: "LocalDate",
+      Date: "LocalDate",
+      datetime: "LocalDateTime",
+      DateTime: "LocalDateTime",
+      timestamp: "LocalDateTime",
+
+      uuid: "UUID",
+      UUID: "UUID",
+      guid: "UUID",
+    };
+
+    const normalized = type.trim();
+    return typeMap[normalized] || "String"; // Default a String si no se encuentra
   }
 
   // ====== Code gen ======
@@ -154,6 +208,10 @@ export class JavaSpringGenerator {
 import jakarta.persistence.*;
 import lombok.*;
 import java.util.*;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.UUID;
 import com.fasterxml.jackson.annotation.*;
 
 `;
@@ -161,17 +219,26 @@ import com.fasterxml.jackson.annotation.*;
 
   private generateFields(cls: ClassDefinition): string {
     const lines: string[] = [];
+    const usedFieldNames = new Set<string>();
 
-    // atributos "simples"
+    // ✅ RESERVAR 'id' desde el inicio
+    usedFieldNames.add("id");
+
+    // Procesar atributos simples
     cls.attributes.forEach((a, i) => {
       const { type, name } = this.parseAttribute(a, i);
-      lines.push(
-        `    @Column(name = "${name.toLowerCase()}")
+
+      // ✅ EVITAR DUPLICAR 'id' y nombres repetidos
+      if (!usedFieldNames.has(name) && name.toLowerCase() !== "id") {
+        usedFieldNames.add(name);
+        lines.push(
+          `    @Column(name = "${name.toLowerCase()}")
     private ${type} ${name};`
-      );
+        );
+      }
     });
 
-    // relaciones para ESTA clase
+    // Procesar relaciones (resto igual)
     const className = cls.name;
     const thisVar = this.toCamelCase(className);
 
@@ -183,10 +250,21 @@ import com.fasterxml.jackson.annotation.*;
         const otherVar = this.toCamelCase(otherClass);
         const collNameFromOther = this.toPlural(otherVar);
 
+        // ✅ EVITAR RELACIONES DUPLICADAS
+        const relationFieldName = isSource
+          ? otherVar
+          : r.type === "ONE_TO_MANY" || r.type === "MANY_TO_MANY"
+          ? collNameFromOther
+          : otherVar;
+
+        if (usedFieldNames.has(relationFieldName)) {
+          return; // Saltar si ya existe
+        }
+        usedFieldNames.add(relationFieldName);
+
         switch (r.type) {
           case "ONE_TO_ONE": {
             if (isSource) {
-              // dueño en source
               lines.push(
                 `    @OneToOne(cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @JoinColumn(name = "${this.toCamelCase(otherClass)}_id")
@@ -194,7 +272,6 @@ import com.fasterxml.jackson.annotation.*;
     private ${otherClass} ${otherVar};`
               );
             } else if (r.bidirectional) {
-              // lado inverso en target
               lines.push(
                 `    @OneToOne(mappedBy = "${otherVar}", fetch = FetchType.LAZY)
     @JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
@@ -206,7 +283,6 @@ import com.fasterxml.jackson.annotation.*;
 
           case "MANY_TO_ONE": {
             if (isSource) {
-              // many(source) -> one(target)
               lines.push(
                 `    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "${this.toCamelCase(otherClass)}_id")
@@ -214,7 +290,6 @@ import com.fasterxml.jackson.annotation.*;
     private ${otherClass} ${otherVar};`
               );
             } else if (r.bidirectional) {
-              // one(target) -> many(source)
               lines.push(
                 `    @OneToMany(mappedBy = "${this.toCamelCase(
                   className
@@ -228,14 +303,12 @@ import com.fasterxml.jackson.annotation.*;
 
           case "ONE_TO_MANY": {
             if (isSource) {
-              // one(source) -> many(target)
               lines.push(
                 `    @OneToMany(mappedBy = "${thisVar}", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     @JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
     private Set<${otherClass}> ${this.toPlural(otherVar)} = new HashSet<>();`
               );
             } else {
-              // many(target) -> one(source)
               lines.push(
                 `    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "${this.toCamelCase(otherClass)}_id")
@@ -262,7 +335,6 @@ import com.fasterxml.jackson.annotation.*;
     private Set<${otherClass}> ${this.toPlural(otherVar)} = new HashSet<>();`
               );
             } else if (r.bidirectional) {
-              // lado inverso
               lines.push(
                 `    @ManyToMany(mappedBy = "${this.toPlural(
                   this.toCamelCase(otherClass)
@@ -282,16 +354,15 @@ import com.fasterxml.jackson.annotation.*;
   private generateClass(cls: ClassDefinition): string {
     const className = this.toPascal(cls.name);
     const varName = this.toCamelCase(className);
-
     const body = this.generateFields(cls);
 
     return `${this.generateImports()}
 @Entity
 @Table(name = "${this.toPlural(className.toLowerCase())}")
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
+@Builder
 public class ${className} {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -321,53 +392,330 @@ ${body ? "\n" + body + "\n" : ""}
 
   generateAll(): Record<string, string> {
     const result: Record<string, string> = {};
-    // Entidades
+
+    result["pom.xml"] = this.generatePomXml();
+    result["src/main/resources/application.properties"] =
+      this.generateApplicationProperties();
+    result["src/main/java/com/example/Application.java"] =
+      this.generateMainApplication();
+    result["src/main/java/com/example/config/ModelMapperConfig.java"] =
+      this.generateModelMapperConfig();
+
+    // Entidades con rutas completas
     this.classes.forEach((cls) => {
-      result[`${this.toPascal(cls.name)}.java`] = this.generateClass(cls);
-    });
-    // DTOs
-    this.classes.forEach((cls) => {
-      result[`${this.toPascal(cls.name)}DTO.java`] = this.generateDTO(cls);
-    });
-    // Repos
-    this.classes.forEach((cls) => {
-      result[`${this.toPascal(cls.name)}Repository.java`] =
-        this.generateRepository(cls);
-    });
-    // Services
-    this.classes.forEach((cls) => {
-      result[`${this.toPascal(cls.name)}Service.java`] =
+      const className = this.toPascal(cls.name);
+      result[`src/main/java/com/example/model/${className}.java`] =
+        this.generateClass(cls);
+      result[`src/main/java/com/example/dto/${className}DTO.java`] =
+        this.generateDTO(cls);
+      result[
+        `src/main/java/com/example/repository/${className}Repository.java`
+      ] = this.generateRepository(cls);
+      result[`src/main/java/com/example/service/${className}Service.java`] =
         this.generateService(cls);
+      result[
+        `src/main/java/com/example/controller/${className}Controller.java`
+      ] = this.generateController(cls);
     });
-    // Controllers
-    this.classes.forEach((cls) => {
-      result[`${this.toPascal(cls.name)}Controller.java`] =
-        this.generateController(cls);
-    });
+
+    result["postman-collection.json"] = this.generatePostmanCollection();
+    result["postman-environment.json"] = this.generatePostmanEnvironment();
+
     return result;
+  }
+
+  private generatePomXml(): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.0</version>
+        <relativePath/>
+    </parent>
+    
+    <groupId>com.example</groupId>
+    <artifactId>spring-boot-project</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <name>Generated Spring Boot Project</name>
+    
+    <properties>
+        <java.version>17</java.version>
+    </properties>
+    
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.modelmapper</groupId>
+            <artifactId>modelmapper</artifactId>
+            <version>3.1.1</version>
+        </dependency>
+    </dependencies>
+    
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>`;
+  }
+
+  private generateApplicationProperties(): string {
+    return `# Configuración de base de datos H2 (en memoria para desarrollo)
+spring.datasource.url=jdbc:h2:mem:testdb
+spring.datasource.driver-class-name=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+
+# JPA/Hibernate configuración
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+spring.jpa.hibernate.ddl-auto=create-drop
+spring.jpa.show-sql=true
+spring.jpa.defer-datasource-initialization=true
+
+# H2 Console
+spring.h2.console.enabled=true
+spring.h2.console.path=/h2-console
+
+# Configuración del servidor
+server.port=8080
+
+# ✅ LOGGING DETALLADO PARA DEBUG
+logging.level.org.springframework.web=INFO
+logging.level.org.hibernate=INFO
+logging.level.org.springframework.context=DEBUG
+logging.level.org.springframework.beans=DEBUG
+logging.level.com.example=DEBUG
+
+# Jackson configuración
+spring.jackson.serialization.fail-on-empty-beans=false
+spring.jackson.serialization.fail-on-self-references=false
+
+# ✅ Desactivar inicialización automática problemática
+spring.jpa.open-in-view=false
+`;
+  }
+  private generateMainApplication(): string {
+    return `package com.example;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}`;
+  }
+
+  private generateModelMapperConfig(): string {
+    return `package com.example.config;
+
+import org.modelmapper.ModelMapper;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class ModelMapperConfig {
+
+    @Bean
+    public ModelMapper modelMapper() {
+        return new ModelMapper();
+    }
+}`;
+  }
+
+  private generatePostmanCollection(): string {
+    const collectionName = "Generated API";
+    const collection = {
+      info: {
+        name: collectionName,
+        description: "Colección generada automáticamente",
+        schema:
+          "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+      },
+      item: this.classes.map((cls) => {
+        const className = this.toPascal(cls.name);
+        const endpoint = this.toPlural(this.toCamelCase(className));
+
+        return {
+          name: `${className} CRUD`,
+          item: [
+            {
+              name: `Get All ${this.toPlural(className)}`,
+              request: {
+                method: "GET",
+                header: [{ key: "Accept", value: "application/json" }],
+                url: {
+                  raw: `{{base_url}}/api/${endpoint}`,
+                  host: ["{{base_url}}"],
+                  path: ["api", endpoint],
+                },
+              },
+            },
+            {
+              name: `Create ${className}`,
+              request: {
+                method: "POST",
+                header: [
+                  { key: "Content-Type", value: "application/json" },
+                  { key: "Accept", value: "application/json" },
+                ],
+                body: {
+                  mode: "raw",
+                  raw: this.generateSampleRequestBody(cls),
+                },
+                url: {
+                  raw: `{{base_url}}/api/${endpoint}`,
+                  host: ["{{base_url}}"],
+                  path: ["api", endpoint],
+                },
+              },
+            },
+          ],
+        };
+      }),
+      variable: [
+        {
+          key: "base_url",
+          value: "http://localhost:8080",
+          type: "string",
+        },
+      ],
+    };
+
+    return JSON.stringify(collection, null, 2);
+  }
+
+  private generatePostmanEnvironment(): string {
+    const environment = {
+      id: `${Date.now()}-env`,
+      name: "Generated Environment",
+      values: [
+        {
+          key: "base_url",
+          value: "http://localhost:8080",
+          enabled: true,
+          type: "default",
+        },
+      ],
+      _postman_variable_scope: "environment",
+    };
+
+    return JSON.stringify(environment, null, 2);
+  }
+
+  private generateSampleRequestBody(cls: ClassDefinition): string {
+    const data: any = {};
+
+    cls.attributes.forEach((attr, i) => {
+      const { type, name } = this.parseAttribute(attr, i);
+
+      switch (type) {
+        case "String":
+          data[name] = `sample_${name}`;
+          break;
+        case "Integer":
+        case "Long":
+          data[name] = 1;
+          break;
+        case "Double":
+        case "Float":
+          data[name] = 1.0;
+          break;
+        case "Boolean":
+          data[name] = true;
+          break;
+        default:
+          data[name] = `sample_${name}`;
+      }
+    });
+
+    return JSON.stringify(data, null, 2);
   }
 
   private generateDTO(cls: ClassDefinition): string {
     const className = this.toPascal(cls.name);
-    const fields = cls.attributes
-      .map((attr, i) => {
-        const { type, name } = this.parseAttribute(attr, i);
-        return `    private ${type} ${name};`;
-      })
-      .filter(Boolean);
+    const usedFieldNames = new Set<string>();
+    usedFieldNames.add("id");
+
+    const fieldDefinitions: string[] = [];
+    const imports = new Set<string>();
+
+    // Procesar solo atributos simples
+    cls.attributes.forEach((attr, i) => {
+      const { type, name } = this.parseAttribute(attr, i);
+
+      if (!usedFieldNames.has(name) && name.toLowerCase() !== "id") {
+        usedFieldNames.add(name);
+        fieldDefinitions.push(`    private ${type} ${name};`);
+        this.addTypeImport(type, imports);
+      }
+    });
+
+    const importSection = Array.from(imports).sort().join("\n");
+    const importBlock = imports.size > 0 ? "\n" + importSection + "\n" : "";
 
     return `package ${this.packageName}.dto;
 
-import lombok.*;
+import lombok.*;${importBlock}
 
-@Getter
-@Setter
+@Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class ${className}DTO {
     private Long id;
-${fields.length ? "\n" + fields.join("\n") + "\n" : ""}
+${fieldDefinitions.length ? "\n" + fieldDefinitions.join("\n") + "\n" : ""}
 }`;
+  }
+
+  private addTypeImport(type: string, imports: Set<string>): void {
+    switch (type) {
+      case "BigDecimal":
+        imports.add("import java.math.BigDecimal;");
+        break;
+      case "LocalDate":
+        imports.add("import java.time.LocalDate;");
+        break;
+      case "LocalDateTime":
+        imports.add("import java.time.LocalDateTime;");
+        break;
+      case "UUID":
+        imports.add("import java.util.UUID;");
+        break;
+    }
   }
 
   private generateRepository(cls: ClassDefinition): string {
@@ -397,11 +745,13 @@ import ${this.packageName}.model.${className};
 import ${this.packageName}.repository.${repoName};
 import org.modelmapper.ModelMapper;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.stream.Collectors;
 
 @Service
+@Transactional
 public class ${className}Service {
 
     private final ${repoName} ${repoVar};
@@ -412,35 +762,57 @@ public class ${className}Service {
         this.modelMapper = modelMapper;
     }
 
+    @Transactional(readOnly = true)
     public List<${dtoName}> findAll() {
         return ${repoVar}.findAll().stream()
-                .map(e -> modelMapper.map(e, ${dtoName}.class))
+                .map(entity -> modelMapper.map(entity, ${dtoName}.class))
                 .collect(Collectors.toList());
     }
 
+    @Transactional(readOnly = true)
     public ${dtoName} findById(Long id) {
-        ${className} e = ${repoVar}.findById(id)
+        ${className} entity = ${repoVar}.findById(id)
                 .orElseThrow(() -> new RuntimeException("${className} not found with id: " + id));
-        return modelMapper.map(e, ${dtoName}.class);
+        return modelMapper.map(entity, ${dtoName}.class);
     }
 
     public ${dtoName} create(${dtoName} dto) {
-        ${className} e = modelMapper.map(dto, ${className}.class);
-        e.setId(null);
-        return modelMapper.map(${repoVar}.save(e), ${dtoName}.class);
+        try {
+            ${className} entity = modelMapper.map(dto, ${className}.class);
+            // ✅ NO usar setId(null) - Lombok @Data maneja esto
+            ${className} savedEntity = ${repoVar}.save(entity);
+            return modelMapper.map(savedEntity, ${dtoName}.class);
+        } catch (Exception e) {
+            throw new RuntimeException("Error creating ${className}: " + e.getMessage(), e);
+        }
     }
 
     public ${dtoName} update(Long id, ${dtoName} dto) {
-        ${className} existing = ${repoVar}.findById(id)
+        try {
+            ${className} existing = ${repoVar}.findById(id)
                 .orElseThrow(() -> new RuntimeException("${className} not found with id: " + id));
-        modelMapper.map(dto, existing);
-        existing.setId(id);
-        return modelMapper.map(${repoVar}.save(existing), ${dtoName}.class);
+            
+            // ✅ Mapear solo los campos, preservando el ID
+            Long originalId = existing.getId();
+            modelMapper.map(dto, existing);
+            existing.setId(originalId); // Restaurar ID original
+            
+            ${className} savedEntity = ${repoVar}.save(existing);
+            return modelMapper.map(savedEntity, ${dtoName}.class);
+        } catch (Exception e) {
+            throw new RuntimeException("Error updating ${className}: " + e.getMessage(), e);
+        }
     }
 
     public void delete(Long id) {
-        if (!${repoVar}.existsById(id)) throw new RuntimeException("${className} not found with id: " + id);
-        ${repoVar}.deleteById(id);
+        try {
+            if (!${repoVar}.existsById(id)) {
+                throw new RuntimeException("${className} not found with id: " + id);
+            }
+            ${repoVar}.deleteById(id);
+        } catch (Exception e) {
+            throw new RuntimeException("Error deleting ${className}: " + e.getMessage(), e);
+        }
     }
 }`;
   }

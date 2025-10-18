@@ -54,6 +54,23 @@ const roleRank: Record<UiRole, number> = {
   EDITOR: 2,
   VIEWER: 1,
 };
+
+interface AiResponse {
+  content: string;
+  suggestions?: {
+    classes: Array<{
+      name: string;
+      attributes: string[];
+      methods: string[];
+    }>;
+    relations?: Array<{
+      from: string;
+      to: string;
+      type: string;
+    }>;
+  };
+}
+
 function promoteRole(
   current: UiRole | null,
   next: UiRole | null
@@ -169,25 +186,28 @@ const MONO_FONT =
   "12px JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
 const NAME_FONT =
   "13px JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace";
-const LINE_HEIGHT = 20;
+const LINE_HEIGHT = 18;
 const NAME_HEIGHT = (CLASS_SIZES as any).H_NAME ?? 44;
-const MIN_ATTRS_H = 28;
-const MIN_METHODS_H = 28;
+const MIN_ATTRS_H = 24;
+const MIN_METHODS_H = 24;
 const HPAD = 16;
 const MIN_WIDTH = Math.max(180, (CLASS_SIZES as any).WIDTH ?? 180);
 
 let _measureCtx: CanvasRenderingContext2D | null = null;
+
 function ensureMeasureCtx() {
   if (_measureCtx) return _measureCtx;
   const c = document.createElement("canvas");
   _measureCtx = c.getContext("2d");
   return _measureCtx!;
 }
+
 function measureTextWidth(text: string, font: string) {
   const ctx = ensureMeasureCtx();
   ctx.font = font;
   return ctx.measureText(text).width;
 }
+
 function computeResizeFromContent(
   name: string,
   attrsArr: string[],
@@ -199,19 +219,20 @@ function computeResizeFromContent(
     ...methodsArr.map((s) => measureTextWidth(s, MONO_FONT)),
   ];
   const width = Math.max(MIN_WIDTH, Math.ceil(Math.max(0, ...widths)) + HPAD);
+
   const attrsH = Math.max(
     MIN_ATTRS_H,
-    (attrsArr.length || 0) * LINE_HEIGHT + 8
+    (attrsArr.length || 0) * LINE_HEIGHT + 12
   );
   const methodsH = Math.max(
     MIN_METHODS_H,
-    (methodsArr.length || 0) * LINE_HEIGHT + 8
+    (methodsArr.length || 0) * LINE_HEIGHT + 12
   );
+
   const nameH = NAME_HEIGHT;
   const totalH = nameH + attrsH + methodsH;
   return { width, nameH, attrsH, methodsH, totalH };
 }
-
 /* ============ FIX dentado / textos ============ */
 const TSPAN_OBS = new Map<string, MutationObserver[]>();
 const RESIZING = new Set<string>();
@@ -406,7 +427,6 @@ function resizeUmlClass(node: any) {
   }
 }
 
-/* =================== Etiquetas de aristas =================== */
 function getEdgePoints(edge: any) {
   const p0 = edge.getSourcePoint();
   const pN = edge.getTargetPoint();
@@ -420,6 +440,7 @@ function getEdgePoints(edge: any) {
     pts.length >= 2 ? segLen(pts[pts.length - 2], pts[pts.length - 1]) : 0;
   return { pts, total, firstLen, lastLen };
 }
+
 function computeSafeEndpointFractions(edge: any) {
   const { total, firstLen, lastLen } = getEdgePoints(edge);
   if (!Number.isFinite(total) || total <= 0) return { src: 0.06, dst: 0.94 };
@@ -436,6 +457,7 @@ function computeSafeEndpointFractions(edge: any) {
   const dst = 1 - dstOff;
   return { src, dst };
 }
+
 function applyEdgeLabels(edge: any) {
   const data = edge.getData?.() ?? {};
   const name: string = data?.name ?? "";
@@ -529,6 +551,13 @@ export default function Editor() {
   const awarenessRef = useRef<Record<string, any>>({});
   const ydocRef = useRef<Y.Doc | null>(null);
   const [transformTick, setTransformTick] = useState(0);
+  const componentMountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      componentMountedRef.current = false;
+    };
+  }, []);
 
   // ==== Puertos ====
   type PortMap = Record<Side, string[]>;
@@ -559,7 +588,8 @@ export default function Editor() {
 
   const PREFERRED_ORDER = [2, 1, 3, 0, 4];
   const portCursorRef = useRef<Record<string, Record<Side, number>>>({});
-  function allocPortPreferMiddle(nodeId: string, side: Side) {
+
+  function allocPortPreferMiddle(nodeId: string, side: Side): string {
     const map = portCursorRef.current;
     map[nodeId] ||= { top: 0, right: 0, bottom: 0, left: 0 };
     const cursor = map[nodeId][side] % PREFERRED_ORDER.length;
@@ -567,6 +597,7 @@ export default function Editor() {
     map[nodeId][side] += 1;
     return SIDE_PORTS[side][idx];
   }
+
   function nearestPort(
     b: { x: number; y: number; width: number; height: number },
     side: Side,
@@ -583,15 +614,19 @@ export default function Editor() {
     const idx = Math.min(N - 1, Math.max(0, Math.round(t * (N - 1))));
     return SIDE_PORTS[side][idx];
   }
+
   function pickSide(
     a: { x: number; y: number },
     b: { x: number; y: number }
   ): Side {
-    const dx = b.x - a.x,
-      dy = b.y - a.y;
-    if (Math.abs(dx) > Math.abs(dy)) return dx >= 0 ? "right" : "left";
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    if (Math.abs(dx) > Math.abs(dy)) {
+      return dx >= 0 ? "right" : "left";
+    }
     return dy >= 0 ? "bottom" : "top";
   }
+
   function opposite(side: Side): Side {
     return side === "top"
       ? "bottom"
@@ -601,10 +636,11 @@ export default function Editor() {
       ? "right"
       : "left";
   }
+
   function reassignEdgePorts(
     edge: any,
-    routerType: RouterType = "orth",
-    connectorType: ConnectorType = "rounded"
+    routerType?: RouterType,
+    connectorType?: ConnectorType
   ) {
     const graph = graphRef.current!;
     const src = edge.getSource();
@@ -626,13 +662,40 @@ export default function Editor() {
     edge.setSource({ cell: srcNode.id, port: srcPort });
     edge.setTarget({ cell: tgtNode.id, port: tgtPort });
 
-    edge.setRouter(ROUTER_CONFIG[routerType]);
-    edge.setConnector(CONNECTOR_CONFIG[connectorType]);
+    // respetar tipos guardados si no vienen explícitos
+    const data = edge.getData?.() || {};
+    const currentRouter = edge.getRouter()?.name;
+    const currentConnector = edge.getConnector()?.name;
+
+    const rt: RouterType =
+      routerType && isValidRouterType(routerType)
+        ? routerType
+        : isValidRouterType(data.routerType)
+        ? data.routerType
+        : isValidRouterType(currentRouter)
+        ? currentRouter
+        : "er";
+
+    const ct: ConnectorType =
+      connectorType && isValidConnectorType(connectorType)
+        ? connectorType
+        : isValidConnectorType(data.connectorType)
+        ? data.connectorType
+        : isValidConnectorType(currentConnector)
+        ? currentConnector
+        : "smooth";
+
+    edge.setRouter(ROUTER_CONFIG[rt]);
+    edge.setConnector(CONNECTOR_CONFIG[ct]);
+
+    edge.setData?.(
+      { ...data, routerType: rt, connectorType: ct },
+      { overwrite: true }
+    );
 
     applyEdgeLabels(edge);
   }
 
-  // Registrar shapes una sola vez
   useEffect(() => {
     registerShapesOnce();
   }, []);
@@ -714,6 +777,7 @@ export default function Editor() {
     node.setData?.(nextData, { overwrite: true });
     resizeUmlClass(node);
   }
+
   function readEdgeToForm(edge: any): RelationFormValues {
     const data = edge.getData?.() ?? {};
     return {
@@ -722,6 +786,7 @@ export default function Editor() {
       multTarget: String(data?.multTarget ?? ""),
     };
   }
+
   function writeFormToEdge(edge: any, form: RelationFormValues) {
     const nextData = {
       ...(edge.getData?.() ?? {}),
@@ -998,6 +1063,7 @@ export default function Editor() {
         console.warn("[Editor] y:sync apply error", e);
       }
     };
+
     const onYUpdate = ({ updateBase64 }: { updateBase64: string }) => {
       try {
         Y.applyUpdate(ydoc, fromBase64(updateBase64));
@@ -1116,6 +1182,8 @@ export default function Editor() {
       },
       interacting: isReadonly ? false : { edgeLabelMovable: true },
     });
+
+    (graph.container as HTMLElement).style.cursor = "default";
 
     graph.use(
       new Selection({
@@ -1664,6 +1732,280 @@ export default function Editor() {
       setRequestSent(false);
     }
   };
+
+  // ...existing code...
+
+  const handleImportFromImage = async (file: File) => {
+    if (!graphRef.current || !canEdit) {
+      throw new Error("No tienes permisos para editar este diagrama");
+    }
+
+    const formData = new FormData();
+    formData.append("image", file);
+
+    try {
+      console.log("🔍 Enviando imagen para análisis...");
+
+      const response = await fetch("/api/ai/analyze-image", {
+        method: "POST",
+        headers: {
+          ...(effectiveToken
+            ? { Authorization: `Bearer ${effectiveToken}` }
+            : {}),
+        },
+        body: formData,
+      });
+
+      if (!componentMountedRef.current) return;
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("❌ Error en análisis:", response.status, errorText);
+
+        let errorMessage = "Error al procesar la imagen";
+        if (response.status === 413) {
+          errorMessage = "La imagen es demasiado grande";
+        } else if (response.status === 400) {
+          errorMessage = "Formato de imagen no válido";
+        } else if (response.status === 500) {
+          errorMessage = "Error interno del servidor";
+        }
+
+        throw new Error(errorMessage);
+      }
+
+      const result: AiResponse = await response.json();
+      console.log("Respuesta del análisis:", result);
+
+      if (
+        !result.suggestions ||
+        !result.suggestions.classes ||
+        !result.suggestions.classes.length
+      ) {
+        if (result.content && result.content.length > 0) {
+          throw new Error(result.content);
+        }
+        throw new Error(
+          "No se pudieron detectar clases en la imagen. Asegúrate de que sea un diagrama UML claro con texto legible."
+        );
+      }
+
+      const graph = graphRef.current;
+      if (!graph) return;
+
+      requestAnimationFrame(() => {
+        if (!componentMountedRef.current) return;
+
+        const classNames = result
+          .suggestions!.classes.map((c) => c.name)
+          .join(", ");
+
+        const shouldClear = window.confirm(
+          `Se detectaron ${
+            result.suggestions!.classes.length
+          } clases: ${classNames}\n\n¿Deseas agregar estas clases al diagrama actual?\n\nPresiona "Aceptar" para agregar o "Cancelar" para abortar.`
+        );
+
+        if (!shouldClear) {
+          toast("Importación cancelada por el usuario", {
+            icon: "ℹ️",
+            style: {
+              background: "#3b82f6",
+              color: "#fff",
+            },
+          });
+          return;
+        }
+
+        graph.batchUpdate(() => {
+          // Calcular posiciones para evitar solapamiento
+          const existingNodes = graph.getNodes();
+          const classCount = result.suggestions!.classes.length;
+          const cols = Math.max(2, Math.ceil(Math.sqrt(classCount)));
+          const spacing = 300;
+
+          let startX = 150;
+          let startY = 150;
+
+          // Si ya hay nodos, posicionar a la derecha
+          if (existingNodes.length > 0) {
+            const positions = existingNodes.map((n) => n.getBBox());
+            const maxX = Math.max(...positions.map((p) => p.x + p.width));
+            startX = Math.max(150, maxX + 100);
+            startY = 150;
+          }
+
+          // Crear nodos para cada clase detectada
+          const createdNodes: Record<string, any> = {};
+
+          result.suggestions!.classes.forEach((classData, index) => {
+            const row = Math.floor(index / cols);
+            const col = index % cols;
+            const x = startX + col * spacing;
+            const y = startY + row * spacing;
+
+            // Limpiar y validar atributos
+            const cleanAttributes = classData.attributes
+              .filter((attr) => attr && attr.trim().length > 0)
+              .map((attr) => attr.trim())
+              .slice(0, 10); // Limitar a 10 atributos
+
+            // Limpiar y validar métodos
+            const cleanMethods = classData.methods
+              .filter((method) => method && method.trim().length > 0)
+              .map((method) => method.trim())
+              .slice(0, 10); // Limitar a 10 métodos
+
+            // Crear el nodo con los datos limpios
+            const node = graph.addNode({
+              shape: "uml-class",
+              x,
+              y,
+              width: (CLASS_SIZES as any).WIDTH,
+              height: (CLASS_SIZES as any).HEIGHT,
+              attrs: {
+                name: { text: classData.name },
+                attrs: { text: cleanAttributes.join("\n") },
+                methods: { text: cleanMethods.join("\n") },
+              },
+              zIndex: 2,
+              data: {
+                name: classData.name,
+                attributes: cleanAttributes,
+                methods: cleanMethods,
+              },
+            }) as any;
+
+            createdNodes[classData.name] = node;
+
+            console.log(`✅ Clase creada: ${classData.name}`, {
+              attributes: cleanAttributes.length,
+              methods: cleanMethods.length,
+              position: { x, y },
+            });
+          });
+
+          // Aplicar resize a todos los nodos creados
+          Object.values(createdNodes).forEach((node) => {
+            resizeUmlClass(node);
+          });
+
+          // Crear relaciones detectadas (si las hay)
+          if (
+            result.suggestions!.relations &&
+            result.suggestions!.relations.length > 0
+          ) {
+            result.suggestions!.relations.forEach((relation) => {
+              const sourceNode = createdNodes[relation.from];
+              const targetNode = createdNodes[relation.to];
+
+              if (sourceNode && targetNode) {
+                try {
+                  // Mapear tipos de relación AI a tipos UML
+                  const relationTypeMap: Record<string, EdgeKind> = {
+                    ASSOCIATION: "assoc",
+                    INHERITANCE: "inherit",
+                    COMPOSITION: "comp",
+                    AGGREGATION: "aggr",
+                    ONE_TO_ONE: "assoc",
+                    ONE_TO_MANY: "assoc",
+                    MANY_TO_ONE: "assoc",
+                    MANY_TO_MANY: "many-to-many",
+                  };
+
+                  const edgeKind: EdgeKind =
+                    relationTypeMap[relation.type] || "assoc";
+                  const style = EDGE_STYLE[edgeKind];
+
+                  // Calcular posición y puertos
+                  const sc = sourceNode.getBBox().center;
+                  const tc = targetNode.getBBox().center;
+                  const sourceSide = pickSide(sc, tc);
+                  const targetSide = opposite(sourceSide);
+                  const sourcePort = allocPortPreferMiddle(
+                    sourceNode.id,
+                    sourceSide
+                  );
+                  const targetPort = allocPortPreferMiddle(
+                    targetNode.id,
+                    targetSide
+                  );
+
+                  // Crear la arista
+                  const edge = graph.addEdge({
+                    attrs: {
+                      line: {
+                        stroke: style.stroke ?? "#6366f1",
+                        strokeWidth: style.strokeWidth ?? 1.5,
+                        strokeDasharray: style.dashed ? 4 : undefined,
+                        sourceMarker: style.sourceMarker ?? null,
+                        targetMarker: style.targetMarker ?? null,
+                      },
+                    },
+                    zIndex: 1000,
+                    router: ROUTER_CONFIG.normal,
+                    connector: CONNECTOR_CONFIG.smooth,
+                    source: { cell: sourceNode.id, port: sourcePort },
+                    target: { cell: targetNode.id, port: targetPort },
+                    data: {
+                      name: relation.type,
+                      multSource: "",
+                      multTarget: "",
+                      routerType: "normal",
+                      connectorType: "smooth",
+                    },
+                  });
+
+                  applyEdgeLabels(edge);
+
+                  console.log(
+                    `✅ Relación creada: ${relation.from} → ${relation.to} (${relation.type})`
+                  );
+                } catch (edgeError) {
+                  console.warn("Error creando relación:", edgeError);
+                }
+              }
+            });
+          }
+        });
+
+        // Centrar y ajustar vista después de crear todo
+        setTimeout(() => {
+          if (!componentMountedRef.current) return;
+          graph.centerContent();
+          graph.zoomToFit({ padding: 50, maxScale: 1 });
+        }, 100);
+
+        // Mensaje de éxito detallado
+        const relationsCount =
+          (result.suggestions!.relations &&
+            result.suggestions!.relations.length) ||
+          0;
+
+        toast.success(
+          `✨ ¡Importación exitosa!\n🏗️ ${
+            result.suggestions!.classes.length
+          } clases creadas${
+            relationsCount > 0
+              ? `\n🔗 ${relationsCount} relaciones agregadas`
+              : ""
+          }`
+        );
+
+        // Disparar autosave para persistir los cambios
+        if (canEdit) {
+          pushSnapshotToYDoc();
+        }
+      });
+    } catch (error: any) {
+      if (!componentMountedRef.current) return;
+
+      console.error("Error importing from image:", error);
+      const errorMessage = error?.message || "Error al procesar la imagen";
+      throw new Error(errorMessage);
+    }
+  };
+
   const goToRegister = () => navigate("/register");
   const goToLogin = () => navigate("/login");
 
@@ -1685,9 +2027,8 @@ export default function Editor() {
         graph={graphRef.current}
         onClassDragStart={handleClassDragStart}
       />
-
       <div className="relative flex-1">
-        <div ref={containerRef} className="absolute inset-0" />
+        <div ref={containerRef} className="absolute inset-0 cursor-default" />
 
         {/* Cursors remotos */}
         <div className="absolute inset-0 pointer-events-none z-40">
@@ -1699,7 +2040,7 @@ export default function Editor() {
             const pos = localToClientPoint(state.cursor.x, state.cursor.y);
             return (
               <div
-                key={id}
+                key={`cursor-${id}`}
                 style={{
                   position: "absolute",
                   left: pos.left,
@@ -1823,6 +2164,7 @@ export default function Editor() {
                 }
               : async () => window.location.href
           }
+          onImportFromImage={canEdit ? handleImportFromImage : undefined}
         />
 
         {loading && (
@@ -1897,7 +2239,7 @@ export default function Editor() {
           />
         )}
       </div>
-
+      {/* REEMPLAZAR la llamada al AIAssistant con todas las props necesarias: */}
       <AIAssistant
         graph={graphRef.current}
         onAddClass={(className, attributes, methods) => {
@@ -1928,6 +2270,8 @@ export default function Editor() {
             data: { name: className, attributes, methods },
           }) as any;
           resizeUmlClass(node);
+
+          pushSnapshotToYDoc();
         }}
         onAddRelation={(from, to, type) => {
           if (!graphRef.current || !canEdit) return;
@@ -1936,7 +2280,21 @@ export default function Editor() {
           const targetNode = nodes.find((n: any) => n.getData()?.name === to);
           if (!(sourceNode && targetNode)) return;
 
-          const edgeStyle = EDGE_STYLE[type as EdgeKind] || EDGE_STYLE.assoc;
+          const typeMapping: Record<string, EdgeKind> = {
+            ONE_TO_ONE: "assoc",
+            ONE_TO_MANY: "assoc",
+            MANY_TO_ONE: "assoc",
+            MANY_TO_MANY: "many-to-many",
+            ASSOCIATION: "assoc",
+            INHERITANCE: "inherit",
+            COMPOSITION: "comp",
+            AGGREGATION: "aggr",
+            DEPENDENCY: "dep",
+          };
+
+          const edgeKind: EdgeKind = typeMapping[type] || "assoc";
+          const edgeStyle = EDGE_STYLE[edgeKind] || EDGE_STYLE.assoc;
+
           const sc = sourceNode.getBBox().center;
           const tc = targetNode.getBBox().center;
           const sourceSide = pickSide(sc, tc);
@@ -1959,12 +2317,24 @@ export default function Editor() {
             connector: { name: "rounded" },
             source: { cell: sourceNode.id, port: sourcePort },
             target: { cell: targetNode.id, port: targetPort },
-            data: { name: "", multSource: "", multTarget: "" },
+            data: {
+              name: type === "INHERITANCE" ? "extends" : "",
+              multSource: "",
+              multTarget: "",
+              type: edgeKind,
+            },
           });
           applyEdgeLabels(edge);
-        }}
-      />
 
+          pushSnapshotToYDoc();
+        }}
+        onToolChange={(newTool: Tool) => {
+          setTool(newTool);
+          onToolClick(newTool);
+        }}
+        currentTool={tool}
+        canEdit={canEdit}
+      />
       <Toaster
         position="bottom-right"
         toastOptions={{

@@ -1,5 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import Groq from 'groq-sdk';
+import sharp from 'sharp';
+import { createWorker, PSM, OEM } from 'tesseract.js';
 
 export type RelationType =
   | 'ONE_TO_ONE'
@@ -48,7 +50,12 @@ export interface CardinalitySuggestion {
 
 export interface AiResponse {
   content: string;
-  suggestions?: UmlSuggestion;
+  suggestions?: {
+    classes?: Array<{ name: string; attributes: string[]; methods: string[] }>;
+    relations?: Array<{ from: string; to: string; type: string }>;
+  };
+  tips?: string[];
+  nextSteps?: string[];
 }
 
 @Injectable()
@@ -263,6 +270,258 @@ Ejemplos de análisis:
     return aggregationPairs.some(
       ([whole, part]) => source.includes(whole) && target.includes(part),
     );
+  }
+
+  async analyzeUmlFromImage(imageBuffer: Buffer): Promise<AiResponse> {
+    try {
+      // 1. Convertir imagen y redimensionar para mejor OCR
+      const processedBuffer = await sharp(imageBuffer)
+        .resize(1920, 1080, { fit: 'inside' })
+        .jpeg({ quality: 90 })
+        .toBuffer();
+
+      const worker = await createWorker('eng', 1, {
+        logger: (m) => {
+          if (m.status === 'recognizing text') {
+            console.log(`OCR Progress: ${Math.round(m.progress * 100)}%`);
+          }
+        },
+      });
+
+      await worker.setParameters({
+        tessedit_char_whitelist:
+          'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789(){}[]:;,.-+*_=<>!@#$%^&|\\/"\'`~? \n\t',
+        tessedit_pageseg_mode: 6 as any, // ✅ Cast como any para evitar el error de tipo
+      });
+
+      const {
+        data: { text: extractedText },
+      } = await worker.recognize(processedBuffer);
+
+      await worker.terminate();
+
+      console.log('[AI] Extracted text from image:', extractedText);
+
+      if (!extractedText || extractedText.trim().length < 10) {
+        return this.getImageAnalysisFallback();
+      }
+
+      // 3. Procesar el texto extraído con Groq para identificar clases UML
+      const systemPrompt = `Analiza este texto extraído de un diagrama UML y extrae la información de clases.
+
+El texto puede contener nombres de clases, atributos, métodos y relaciones.
+Busca patrones típicos de UML como:
+- Nombres de clases (usualmente en mayúsculas o CamelCase)
+- Atributos con tipos (ej: "name: String", "id: int", "email: string")
+- Métodos con paréntesis (ej: "getName()", "setId(int)", "login()")
+- Palabras de relación como "extends", "implements", "has", "uses"
+
+IMPORTANTE: 
+- Extrae TODOS los atributos y métodos que encuentres para cada clase
+- Si ves líneas como "+attribute", "-method", "public", "private", inclúyelos
+- Mantén los tipos de datos originales si están presentes
+
+RESPONDE SIEMPRE en formato JSON válido:
+{
+  "content": "Descripción de lo encontrado en el diagrama",
+  "suggestions": {
+    "classes": [
+      {
+        "name": "NombreClase",
+        "attributes": ["tipo atributo1", "tipo atributo2"],
+        "methods": ["metodo1()", "metodo2()"]
+      }
+    ],
+    "relations": [
+      {
+        "from": "ClaseA",
+        "to": "ClaseB", 
+        "type": "ASSOCIATION"
+      }
+    ]
+  }
+}`;
+
+      const completion = await this.groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content: `Analiza este texto extraído de un diagrama UML y extrae TODAS las clases, atributos, métodos y relaciones que puedas identificar:\n\nTEXTO EXTRAÍDO:\n${extractedText}\n\nPor favor, extrae toda la información posible de clases UML.`,
+          },
+        ],
+        model: 'llama-3.1-8b-instant', // Cambiar a un modelo válido
+        temperature: 0.1,
+        max_tokens: 2000,
+      });
+
+      const raw = completion.choices?.[0]?.message?.content ?? '';
+      console.log('[AI] Raw Groq response:', raw);
+
+      if (!raw) {
+        return this.getImageAnalysisFallbackWithText(extractedText);
+      }
+
+      const parsed = this.tryParseJsonStrictOrLoose(raw);
+      if (!parsed) {
+        console.log('[AI] Failed to parse JSON, using fallback with text');
+        return this.getImageAnalysisFallbackWithText(extractedText);
+      }
+
+      const normalized = this.normalizeAiResponse(parsed);
+      if (!normalized || !normalized.suggestions?.classes?.length) {
+        console.log('[AI] No valid classes found, using fallback with text');
+        return this.getImageAnalysisFallbackWithText(extractedText);
+      }
+
+      console.log('[AI] Successfully analyzed image:', {
+        classCount: normalized.suggestions.classes.length,
+        relationCount: normalized.suggestions.relations?.length || 0,
+      });
+
+      return normalized;
+    } catch (err) {
+      console.error('[AiService] Error analyzing image:', err);
+      return this.getImageAnalysisFallback();
+    }
+  }
+
+  // ✅ Agregar función fallback mejorada con análisis de texto
+  private getImageAnalysisFallbackWithText(extractedText?: string): AiResponse {
+    if (!extractedText || extractedText.trim().length < 5) {
+      return this.getImageAnalysisFallback();
+    }
+
+    // Fallback mejorado: extraer información básica del texto
+    const lines = extractedText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+
+    const possibleClasses: Array<{
+      name: string;
+      attributes: string[];
+      methods: string[];
+    }> = [];
+
+    // Patrones mejorados para detectar elementos UML
+    const classPattern = /\b[A-Z][a-zA-Z0-9]*\b/g;
+    const methodPattern = /\b\w+\s*\([^)]*\)\s*:?\s*\w*/g;
+    const attributePattern = /\b\w+\s*:\s*\w+\b/g;
+
+    // Buscar posibles nombres de clases
+    const potentialClassNames = new Set<string>();
+
+    lines.forEach((line) => {
+      const matches = line.match(classPattern);
+      if (matches) {
+        matches.forEach((match) => {
+          // Filtrar palabras comunes que no son clases
+          if (
+            match.length > 2 &&
+            ![
+              'String',
+              'Integer',
+              'Boolean',
+              'Date',
+              'Array',
+              'List',
+              'void',
+              'int',
+              'bool',
+            ].includes(match) &&
+            !match.toLowerCase().includes('class') // Evitar la palabra "class" misma
+          ) {
+            potentialClassNames.add(match);
+          }
+        });
+      }
+    });
+
+    // Crear clases básicas con la información disponible
+    Array.from(potentialClassNames)
+      .slice(0, 8) // Incrementar límite
+      .forEach((className) => {
+        const attributes: string[] = [];
+        const methods: string[] = [];
+
+        // Buscar atributos y métodos relacionados con esta clase
+        lines.forEach((line) => {
+          if (line.toLowerCase().includes(className.toLowerCase())) {
+            const attrMatches = line.match(attributePattern);
+            const methodMatches = line.match(methodPattern);
+
+            if (attrMatches) {
+              attributes.push(...attrMatches.map((attr) => attr.trim()));
+            }
+            if (methodMatches) {
+              methods.push(...methodMatches.map((method) => method.trim()));
+            }
+          }
+        });
+
+        // Agregar atributos y métodos genéricos si no se encontraron
+        if (attributes.length === 0) {
+          attributes.push(
+            `id: int`,
+            `${className.toLowerCase()}Name: string`,
+            `createdAt: date`,
+          );
+        }
+
+        if (methods.length === 0) {
+          methods.push(
+            `get${className}()`,
+            `set${className}()`,
+            `save(): void`,
+            `delete(): void`,
+          );
+        }
+
+        possibleClasses.push({
+          name: className,
+          attributes: [...new Set(attributes)].slice(0, 8), // Eliminar duplicados
+          methods: [...new Set(methods)].slice(0, 8), // Eliminar duplicados
+        });
+      });
+
+    // Si no se encontraron clases, crear al menos una clase ejemplo
+    if (possibleClasses.length === 0 && extractedText.length > 20) {
+      const allMatches = extractedText.match(/\b\w{3,}\b/g) || [];
+      const uniqueWords = [...new Set(allMatches)].slice(0, 5);
+
+      if (uniqueWords.length > 0) {
+        possibleClasses.push({
+          name: 'ClaseDetectada',
+          attributes: ['id: int', 'name: string', 'status: string'],
+          methods: ['getId(): int', 'getName(): string', 'save(): void'],
+        });
+      }
+    }
+
+    const resultMessage =
+      possibleClasses.length > 0
+        ? `Se extrajeron ${possibleClasses.length} clases del diagrama. Revisa y ajusta los atributos y métodos según sea necesario.`
+        : 'Se extrajo texto de la imagen pero no se pudieron identificar clases UML claras. Revisa que la imagen contenga un diagrama UML con texto legible.';
+
+    return {
+      content: resultMessage,
+      suggestions: {
+        classes: possibleClasses,
+        relations: [], // Las relaciones son difíciles de extraer del OCR simple
+      },
+    };
+  }
+
+  private getImageAnalysisFallback(): AiResponse {
+    return {
+      content:
+        'No se pudo procesar la imagen. Asegúrate de que sea un diagrama UML claro con clases visibles y texto legible. Recomendaciones: usar alta resolución, buen contraste y texto claramente visible.',
+      suggestions: {
+        classes: [],
+        relations: [],
+      },
+    };
   }
 
   async analyzeUmlRequest(userInput: string): Promise<AiResponse> {

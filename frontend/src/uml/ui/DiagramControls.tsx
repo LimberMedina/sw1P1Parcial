@@ -1,11 +1,11 @@
-// src/uml/ui/DiagramControls.tsx
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useEffect, useMemo, useRef, useState } from "react";
+import ReactDOM from "react-dom";
 import type { Graph } from "@antv/x6";
-import { MiniMap } from "@antv/x6-plugin-minimap";
+import { MiniMap as X6MiniMap } from "@antv/x6-plugin-minimap";
 import { Export } from "@antv/x6-plugin-export";
 import type { Tool } from "./Sidebar";
 import { IconCenter, IconCursor, IconZoomIn, IconZoomOut } from "../icons";
-import { Save, Share2, Download, ChevronDown } from "lucide-react";
+import { Save, Share2, Download, ChevronDown, FileImage } from "lucide-react";
 import toast from "react-hot-toast";
 
 type Props = {
@@ -15,11 +15,22 @@ type Props = {
   onSave?: () => Promise<void>;
   disabled?: boolean;
   exportName?: string;
-
   onGetShareLink?: () => Promise<string>;
-
   canShare?: boolean;
+  onImportFromImage?: (file: File) => Promise<void>;
 };
+
+/** Crea u obtiene un div persistente en body (no se remueve nunca) */
+function ensureRoot(id: string, style?: Partial<CSSStyleDeclaration>) {
+  let el = document.getElementById(id) as HTMLDivElement | null;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = id;
+    document.body.appendChild(el);
+  }
+  if (style) Object.assign(el.style, style);
+  return el;
+}
 
 export default function DiagramControls({
   graph,
@@ -29,28 +40,30 @@ export default function DiagramControls({
   disabled = false,
   exportName = "diagram",
   onGetShareLink,
+  onImportFromImage,
 }: Props) {
-  const minimapRef = useRef<HTMLDivElement | null>(null);
+  // ---- Estado mínimo de UI (no se usa durante import) ----
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [sharing, setSharing] = useState(false);
 
-  const [showExportMenu, setShowExportMenu] = useState(false);
   const exportMenuRef = useRef<HTMLDivElement>(null);
 
+  // Cerrar menú al click afuera (seguro)
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleClickOutside = (e: MouseEvent) => {
       if (
         exportMenuRef.current &&
-        !exportMenuRef.current.contains(event.target as Node)
+        !exportMenuRef.current.contains(e.target as Node)
       ) {
         setShowExportMenu(false);
       }
     };
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  useEffect(() => {
+  // Instalar Export una sola vez por graph
+  useLayoutEffect(() => {
     if (!graph) return;
     if (!(graph as any).__exportInstalled) {
       graph.use(new Export());
@@ -58,21 +71,74 @@ export default function DiagramControls({
     }
   }, [graph]);
 
-  useEffect(() => {
-    if (!graph || !minimapRef.current) return;
-    if (!(graph as any).__minimapInstalled) {
-      graph.use(
-        new MiniMap({
-          container: minimapRef.current,
-          width: 200,
-          height: 140,
-          padding: 8,
-        })
-      );
-      (graph as any).__minimapInstalled = true;
-    }
-  }, [graph]);
+  // ========= Raíz persistente para TOOLBAR en <body> =========
+  const toolbarRoot = useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return ensureRoot("diagram-toolbar-root", {
+      position: "fixed",
+      left: "50%",
+      top: "1rem",
+      transform: "translateX(-50%)",
+      zIndex: "60",
+      pointerEvents: "none", // el contenedor no captura eventos
+    });
+  }, []);
 
+  // ========= MiniMap FUERA de React en raíz persistente =========
+  const minimapRoot = useMemo(() => {
+    if (typeof document === "undefined") return null;
+    return ensureRoot("x6-minimap-root", {
+      position: "fixed",
+      right: "1rem",
+      bottom: "1rem",
+      zIndex: "50",
+      background: "rgba(255,255,255,0.9)",
+      border: "1px solid #e5e7eb",
+      borderRadius: "0.75rem",
+      boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
+      padding: "0.5rem",
+      pointerEvents: "auto",
+    });
+  }, []);
+
+  const minimapInstanceRef = useRef<X6MiniMap | null>(null);
+
+  useLayoutEffect(() => {
+    if (!graph || !minimapRoot) return;
+
+    // Limpia contenido (NO remover root)
+    minimapRoot.innerHTML = "";
+
+    // Contenedor no-React para el plugin
+    const inner = document.createElement("div");
+    Object.assign(inner.style, {
+      width: "200px",
+      height: "140px",
+      padding: "8px",
+    } as CSSStyleDeclaration);
+    minimapRoot.appendChild(inner);
+
+    const mm = new X6MiniMap({
+      container: inner,
+      width: 200,
+      height: 140,
+      padding: 8,
+    });
+    graph.use(mm);
+    minimapInstanceRef.current = mm;
+
+    // Cleanup: dispose plugin, limpiar contenido (root persiste)
+    return () => {
+      try {
+        minimapInstanceRef.current?.dispose?.();
+      } catch {}
+      minimapInstanceRef.current = null;
+      minimapRoot.innerHTML = "";
+    };
+  }, [graph, minimapRoot]);
+
+  // ===== Acciones =====
+  const toolbarDisabled = disabled || !graph;
   const zoomIn = () => graph?.zoom(0.1);
   const zoomOut = () => graph?.zoom(-0.1);
   const center = () => graph?.centerContent();
@@ -80,54 +146,39 @@ export default function DiagramControls({
   const exportPNG = async () => {
     setShowExportMenu(false);
     if (!graph) return;
-
     try {
       const nodes = graph.getNodes();
       if (nodes.length === 0) {
         toast.error("No hay contenido para exportar");
         return;
       }
-
       toast.loading("Generando PNG...", { id: "export-png" });
-
       const { default: html2canvas } = await import("html2canvas");
-
-      // Capturar todo el contenedor en lugar del SVG específico
       const container = graph.container as HTMLElement;
-
-      // Capturar todo el contenedor del graph
       const canvas = await html2canvas(container, {
-        background: "#ffffff", // ← Cambiar backgroundColor por background
-
+        background: "#ffffff",
         useCORS: true,
         allowTaint: true,
       });
-
-      // Convertir a blob y descargar
       canvas.toBlob(
         (blob) => {
-          if (blob) {
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.download = `${exportName}.png`;
-            link.href = url;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-            URL.revokeObjectURL(url);
-
-            toast.success("PNG exportado correctamente ✅", {
-              id: "export-png",
-            });
-          } else {
-            toast.error("Error al generar PNG", { id: "export-png" });
-          }
+          if (!blob)
+            return toast.error("Error al generar PNG", { id: "export-png" });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.download = `${exportName}.png`;
+          link.href = url;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          toast.success("PNG exportado correctamente ✅", { id: "export-png" });
         },
         "image/png",
         1.0
       );
-    } catch (error) {
-      console.error("Error al exportar PNG:", error);
+    } catch (err) {
+      console.error("Error al exportar PNG:", err);
       toast.error("Error al exportar PNG", { id: "export-png" });
     }
   };
@@ -135,72 +186,42 @@ export default function DiagramControls({
   const exportPDF = async () => {
     setShowExportMenu(false);
     if (!graph) return;
-
     try {
       const nodes = graph.getNodes();
       if (nodes.length === 0) {
         toast.error("No hay contenido para exportar");
         return;
       }
-
       toast.loading("Generando PDF...", { id: "export-pdf" });
-
       const { default: html2canvas } = await import("html2canvas");
       const { default: jsPDF } = await import("jspdf");
-
-      // Capturar todo el contenedor en lugar del SVG
       const container = graph.container as HTMLElement;
-
-      // Capturar imagen con mejor calidad
       const canvas = await html2canvas(container, {
         background: "#ffffff",
-
         useCORS: true,
         allowTaint: true,
       });
-
-      // Crear PDF
       const pdf = new jsPDF({
         orientation: "landscape",
         unit: "mm",
         format: "a4",
       });
-
-      // Convertir canvas a imagen
       const imgData = canvas.toDataURL("image/png", 1.0);
-
-      // Dimensiones A4 landscape
       const pdfWidth = 297;
       const pdfHeight = 210;
-
-      // Calcular dimensiones manteniendo aspecto
       const canvasAspect = canvas.width / canvas.height;
       const pdfAspect = pdfWidth / pdfHeight;
-
       let finalWidth = pdfWidth;
       let finalHeight = pdfHeight;
-
-      if (canvasAspect > pdfAspect) {
-        // La imagen es más ancha, ajustar por ancho
-        finalHeight = pdfWidth / canvasAspect;
-      } else {
-        // La imagen es más alta, ajustar por alto
-        finalWidth = pdfHeight * canvasAspect;
-      }
-
-      // Centrar la imagen en el PDF
+      if (canvasAspect > pdfAspect) finalHeight = pdfWidth / canvasAspect;
+      else finalWidth = pdfHeight * canvasAspect;
       const offsetX = (pdfWidth - finalWidth) / 2;
       const offsetY = (pdfHeight - finalHeight) / 2;
-
-      // Agregar imagen al PDF
       pdf.addImage(imgData, "PNG", offsetX, offsetY, finalWidth, finalHeight);
-
-      // Descargar PDF
       pdf.save(`${exportName}.pdf`);
-
       toast.success("PDF exportado correctamente ✅", { id: "export-pdf" });
-    } catch (error) {
-      console.error("Error al exportar PDF:", error);
+    } catch (err) {
+      console.error("Error al exportar PDF:", err);
       toast.error("Error al exportar PDF", { id: "export-pdf" });
     }
   };
@@ -217,23 +238,15 @@ export default function DiagramControls({
   };
 
   const handleShare = async () => {
-    // No deshabilitamos el botón; solo prevenimos doble-click rápido.
-    if (sharing) return;
-
-    if (!onGetShareLink) {
-      toast.error("No hay handler para obtener el enlace de compartir.");
-      return;
-    }
+    if (sharing || !onGetShareLink) return;
     try {
       setSharing(true);
       const url = await onGetShareLink();
       if (typeof url === "string" && url.length > 0) {
-        // Intento con Clipboard API
         try {
           await navigator.clipboard.writeText(url);
           toast.success("Enlace copiado al portapapeles 🔗");
         } catch {
-          // Fallback: prompt
           window.prompt("Copia el enlace:", url);
           toast.success("Enlace generado. Cópialo desde el cuadro.");
         }
@@ -248,138 +261,237 @@ export default function DiagramControls({
     }
   };
 
-  // Solo para los demás botones (zoom/export/guardar)
-  const toolbarDisabled = disabled || !graph;
+  // ===== Importar SIN setState (imperativo) =====
+  const importBtnRef = useRef<HTMLButtonElement | null>(null);
+  const importBtnContentRef = useRef<HTMLSpanElement | null>(null);
+  const importingRef = useRef(false); // no causa re-render
 
-  return (
-    <>
-      {/* Barra superior */}
-      <div className="absolute left-1/2 top-4 z-10 -translate-x-1/2 rounded-2xl border border-gray-200 bg-white/90 px-2 py-1 shadow backdrop-blur">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onToolClick("cursor")}
-            disabled={toolbarDisabled}
-            className={
-              "rounded-xl px-3 py-2 text-sm " +
-              (tool === "cursor"
-                ? "bg-gray-100 text-gray-900"
-                : "text-gray-700 hover:bg-gray-50") +
-              (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-            }
-            title="Cursor"
-          >
-            <IconCursor className="mr-1 inline h-4 w-4" />
-            Cursor
-          </button>
+  const setImportingUI = (isOn: boolean) => {
+    const btn = importBtnRef.current;
+    const span = importBtnContentRef.current;
+    if (!btn || !span) return;
+    if (isOn) {
+      btn.disabled = true;
+      btn.classList.add("opacity-50", "cursor-not-allowed");
+      // Spinner simple + texto (sin re-render)
+      span.innerHTML =
+        '<span class="inline-block align-middle" style="width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:9999px;animation:spin 0.8s linear infinite;margin-right:6px"></span>Analizando...';
+      // inyectar keyframes spin si no existe
+      if (!document.getElementById("__spin_keyframes")) {
+        const style = document.createElement("style");
+        style.id = "__spin_keyframes";
+        style.textContent = "@keyframes spin{to{transform:rotate(360deg)}}";
+        document.head.appendChild(style);
+      }
+    } else {
+      btn.disabled = false;
+      btn.classList.remove("opacity-50", "cursor-not-allowed");
+      span.innerHTML = `<span class="inline-flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>Importar</span>`;
+    }
+  };
 
-          <span className="mx-1 h-6 w-px bg-gray-200" />
+  const handleImportClick = () => {
+    if (!onImportFromImage || importingRef.current) return;
 
-          <button
-            onClick={zoomOut}
-            disabled={toolbarDisabled}
-            title="Zoom out"
-            className={
-              "rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50" +
-              (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-            }
-          >
-            <IconZoomOut className="h-5 w-5" />
-          </button>
-          <button
-            onClick={zoomIn}
-            disabled={toolbarDisabled}
-            title="Zoom in"
-            className={
-              "rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50" +
-              (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-            }
-          >
-            <IconZoomIn className="h-5 w-5" />
-          </button>
-          <button
-            onClick={center}
-            disabled={toolbarDisabled}
-            title="Center"
-            className={
-              "rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50" +
-              (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-            }
-          >
-            <IconCenter className="h-5 w-5" />
-          </button>
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
 
-          {/* Guardar */}
-          <button
-            onClick={handleSave}
-            disabled={toolbarDisabled}
-            title="Guardar diagrama"
-            className={
-              "rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50" +
-              (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
-            }
-          >
-            <Save className="h-5 w-5" />
-          </button>
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
 
-          <span className="mx-1 h-6 w-px bg-gray-200" />
+      if (!file.type.startsWith("image/")) {
+        toast.error("Por favor selecciona un archivo de imagen válido");
+        return;
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        toast.error("La imagen es demasiado grande. Máximo 10MB");
+        return;
+      }
 
-          {/* Export con menú desplegable */}
-          <div className="relative" ref={exportMenuRef}>
+      importingRef.current = true;
+      setImportingUI(true);
+
+      try {
+        toast.loading("Analizando imagen con IA...", { id: "import-image" });
+        await onImportFromImage(file);
+        toast.success("¡Diagrama importado exitosamente! ✨", {
+          id: "import-image",
+        });
+      } catch (error: any) {
+        console.error("Error importing image:", error);
+        let errorMessage = "Error al procesar la imagen";
+
+        if (error?.message?.includes("No se pudieron detectar clases")) {
+          errorMessage =
+            "No se detectaron clases UML en la imagen. Intenta con una imagen más clara.";
+        } else if (error?.message?.includes("No tienes permisos")) {
+          errorMessage = "No tienes permisos para editar este diagrama.";
+        } else if (error?.message?.includes("demasiado grande")) {
+          errorMessage = "La imagen es demasiado grande. Máximo 10MB.";
+        } else if (error?.message) {
+          errorMessage = error.message;
+        }
+
+        toast.error(errorMessage, { id: "import-image" });
+      } finally {
+        importingRef.current = false;
+        setImportingUI(false);
+      }
+    };
+
+    // Abrir selector
+    input.click();
+  };
+
+  // ===== Toolbar UI (portal) =====
+  const toolbar = (
+    <div
+      role="toolbar"
+      key="diagram-toolbar"
+      style={{ pointerEvents: "auto" }} // reactivamos eventos en el hijo
+      className="rounded-2xl border border-gray-200 bg-white/90 px-2 py-1 shadow backdrop-blur"
+    >
+      <div className="flex items-center gap-1">
+        {/* Cursor */}
+        <button
+          onClick={() => onToolClick("cursor")}
+          disabled={toolbarDisabled}
+          className={
+            "rounded-xl px-3 py-2 text-sm " +
+            (tool === "cursor"
+              ? "bg-gray-100 text-gray-900"
+              : "text-gray-700 hover:bg-gray-50") +
+            (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
+          }
+          title="Cursor"
+        >
+          <IconCursor className="mr-1 inline h-4 w-4" />
+          Cursor
+        </button>
+
+        <span className="mx-1 h-6 w-px bg-gray-200" />
+
+        {/* Zoom */}
+        <button
+          onClick={zoomOut}
+          disabled={toolbarDisabled}
+          title="Zoom out"
+          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+        >
+          <IconZoomOut className="h-5 w-5" />
+        </button>
+        <button
+          onClick={zoomIn}
+          disabled={toolbarDisabled}
+          title="Zoom in"
+          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+        >
+          <IconZoomIn className="h-5 w-5" />
+        </button>
+        <button
+          onClick={center}
+          disabled={toolbarDisabled}
+          title="Center"
+          className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+        >
+          <IconCenter className="h-5 w-5" />
+        </button>
+
+        {/* Guardar */}
+        {onSave && (
+          <>
+            <span className="mx-1 h-6 w-px bg-gray-200" />
             <button
-              onClick={() => setShowExportMenu(!showExportMenu)}
+              onClick={handleSave}
               disabled={toolbarDisabled}
-              title="Exportar diagrama"
+              title="Guardar diagrama"
+              className="rounded-xl px-2 py-2 text-gray-700 hover:bg-gray-50"
+            >
+              <Save className="h-5 w-5" />
+            </button>
+          </>
+        )}
+
+        <span className="mx-1 h-6 w-px bg-gray-200" />
+
+        {/* Exportar */}
+        <div className="relative" ref={exportMenuRef}>
+          <button
+            onClick={() => setShowExportMenu((v) => !v)}
+            disabled={toolbarDisabled}
+            className="rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-1"
+          >
+            <Download className="h-4 w-4" />
+            Exportar
+            <ChevronDown className="h-3 w-3" />
+          </button>
+
+          {showExportMenu && !toolbarDisabled && (
+            <div className="absolute top-full mt-1 right-0 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[140px] z-20">
+              <button
+                onClick={exportPNG}
+                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              >
+                <span aria-hidden>🖼️</span>
+                Exportar PNG
+              </button>
+              <button
+                onClick={exportPDF}
+                className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+              >
+                <span aria-hidden>📄</span>
+                Exportar PDF
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Importar desde imagen (imperativo, sin setState) */}
+        {onImportFromImage && (
+          <>
+            <span className="mx-1 h-6 w-px bg-gray-200" />
+            <button
+              ref={importBtnRef}
+              onClick={handleImportClick}
+              disabled={toolbarDisabled} // solo depende de disabled/graph (estables)
+              title="Importar diagrama desde imagen"
               className={
-                "rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-1" +
-                (toolbarDisabled ? " opacity-50 cursor-not-allowed" : "")
+                "rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-1"
               }
             >
-              <Download className="h-4 w-4" />
-              Exportar
-              <ChevronDown className="h-3 w-3" />
+              {/* Contenido modificable sin re-render */}
+              <span
+                ref={importBtnContentRef}
+                className="inline-flex items-center gap-1"
+              >
+                <FileImage className="h-4 w-4" />
+                Importar
+              </span>
             </button>
+          </>
+        )}
 
-            {/* Menú desplegable */}
-            {showExportMenu && !toolbarDisabled && (
-              <div className="absolute top-full mt-1 right-0 bg-white border border-gray-200 rounded-lg shadow-lg py-1 min-w-[120px] z-20">
-                <button
-                  onClick={exportPNG}
-                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
-                  <span className="text-blue-500">🖼️</span>
-                  Exportar PNG
-                </button>
-                <button
-                  onClick={exportPDF}
-                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-                >
-                  <span className="text-red-500">📄</span>
-                  Exportar PDF
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Compartir (SIEMPRE habilitado) */}
-          <span className="mx-1 h-6 w-px bg-gray-200" />
-          <button
-            onClick={handleShare}
-            title="Compartir enlace del proyecto"
-            className={
-              "rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
-            }
-          >
-            <Share2 className="h-5 w-5" />
-            {sharing ? "Generando..." : "Compartir"}
-          </button>
-        </div>
+        {/* Compartir */}
+        {onGetShareLink && (
+          <>
+            <span className="mx-1 h-6 w-px bg-gray-200" />
+            <button
+              onClick={handleShare}
+              disabled={sharing}
+              title="Compartir enlace del proyecto"
+              className="rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+            >
+              <Share2 className="h-5 w-5" />
+              {sharing ? "Generando..." : "Compartir"}
+            </button>
+          </>
+        )}
       </div>
-
-      {/* Minimap */}
-      <div
-        ref={minimapRef}
-        className="pointer-events-auto absolute bottom-4 right-4 z-10 rounded-xl border border-gray-200 bg-white/90 p-2 shadow"
-      />
-    </>
+    </div>
   );
+
+  if (!toolbarRoot) return null;
+  return ReactDOM.createPortal(toolbar, toolbarRoot);
 }

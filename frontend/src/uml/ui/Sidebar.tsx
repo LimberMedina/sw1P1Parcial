@@ -701,19 +701,15 @@ export default function Sidebar({
         return;
       }
 
-      // ===== Clases (normalizadas a lo que espera el generador) =====
+      // ===== SOLO extraer datos del diagrama =====
       const clases = graph.getNodes().map((nodo: any, idx: number) => {
         const data = nodo.getData?.() ?? {};
-
-        // nombre de clase seguro
         const rawName = data.name || `Clase_${idx + 1}`;
         const className = sanitizeIdentifier(rawName, `Clase_${idx + 1}`);
 
-        // atributos: convertir a strings "nombre: Tipo"
         const rawAttrs = coerceArrayOfLines(data.attributes);
         const attributes = rawAttrs
           .map((line, i) => {
-            // soporta "a: int" o "a" (sin tipo => String)
             const [n, t] = String(line).split(":");
             const nombre = sanitizeIdentifier(n, `campo_${i + 1}`);
             const tipo = String(t ?? "String").trim() || "String";
@@ -721,7 +717,6 @@ export default function Sidebar({
           })
           .filter(Boolean);
 
-        // métodos: convertir a strings "metodo(a: T): R"
         const rawMethods = coerceArrayOfLines(data.methods);
         const methods = rawMethods
           .map((m) => {
@@ -730,7 +725,6 @@ export default function Sidebar({
               const metodo = sanitizeIdentifier(parsed.nombre, "metodo");
               const params = parsed.parametros
                 .map((p, k) => {
-                  // soporta "x: T" o "x"
                   const [pn, pt] = p.split(":");
                   const pName = sanitizeIdentifier(pn, `p${k + 1}`);
                   const pType = String(pt ?? "String").trim() || "String";
@@ -740,13 +734,11 @@ export default function Sidebar({
               const ret = String(parsed.tipoRetorno || "void").trim();
               return `${metodo}(${params}): ${ret}`;
             }
-            // si el usuario ya escribió en formato correcto, lo dejamos
             return m;
           })
           .filter(Boolean);
 
         return {
-          // IMPORTANTE: claves en inglés como espera el generador
           name: String(className),
           attributes,
           methods,
@@ -760,7 +752,6 @@ export default function Sidebar({
         return;
       }
 
-      // ===== Relaciones (con campos en inglés) =====
       const relaciones = graph.getEdges().map((edge: any) => {
         const data = edge.getData?.() ?? {};
         const source =
@@ -781,7 +772,6 @@ export default function Sidebar({
           target,
           type: edgeType,
           bidirectional: !!data.bidirectional,
-          // datos extra por si tu generador los usa
           sourceMultiplicity: String(data.sourceMultiplicity || "").trim(),
           targetMultiplicity: String(data.targetMultiplicity || "").trim(),
           name: String(data.name || "").trim(),
@@ -789,46 +779,22 @@ export default function Sidebar({
         };
       });
 
-      // ===== Crear generador y cargar estructuras =====
+      // ===== USAR SOLO JavaSpringGenerator =====
       const generator = new JavaSpringGenerator("com.example");
       clases.forEach((cls) => generator.addClass(cls));
       relaciones.forEach((rel) => generator.addRelation(rel));
 
-      // ===== Generar archivos =====
+      // ✅ Obtener TODOS los archivos del generador
       const files = generator.generateAll();
 
-      // ===== Empaquetar ZIP =====
+      // ===== Crear ZIP con estructura correcta =====
       const zip = new JSZip();
-
-      // Config
-      zip.file("pom.xml", generatePomXml());
-      zip.file(
-        "src/main/resources/application.properties",
-        generateApplicationProperties()
-      );
-
-      const srcMainJava = zip.folder("src/main/java/com/example")!;
-      srcMainJava.file("Application.java", generateApplicationClass());
-
-      const modelFolder = srcMainJava.folder("model")!;
-      const dtoFolder = srcMainJava.folder("dto")!;
-      const repoFolder = srcMainJava.folder("repository")!;
-      const serviceFolder = srcMainJava.folder("service")!;
-      const controllerFolder = srcMainJava.folder("controller")!;
 
       Object.entries(files).forEach(([filename, content]) => {
         const text = String(content ?? "");
-        if (filename.endsWith("DTO.java")) {
-          dtoFolder.file(filename, text);
-        } else if (filename.includes("Repository")) {
-          repoFolder.file(filename, text);
-        } else if (filename.includes("Service")) {
-          serviceFolder.file(filename, text);
-        } else if (filename.includes("Controller")) {
-          controllerFolder.file(filename, text);
-        } else {
-          modelFolder.file(filename, text);
-        }
+
+        // Los archivos del generador ya vienen con rutas completas
+        zip.file(filename, text);
       });
 
       const blob = await zip.generateAsync({ type: "blob" });
@@ -847,111 +813,7 @@ export default function Sidebar({
       toast.error("Error al generar el proyecto");
     }
   };
-
   // ======= Auxiliares POM / properties / Application.java =======
-  function generatePomXml(): string {
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
-    <modelVersion>4.0.0</modelVersion>
-    <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.1.0</version>
-    </parent>
-    
-    <groupId>com.example</groupId>
-    <artifactId>spring-boot-project</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
-    
-    <properties>
-        <java.version>17</java.version>
-    </properties>
-    
-    <dependencies>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.postgresql</groupId>
-            <artifactId>postgresql</artifactId>
-            <scope>runtime</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <optional>true</optional>
-        </dependency>
-        <dependency>
-            <groupId>org.modelmapper</groupId>
-            <artifactId>modelmapper</artifactId>
-            <version>3.1.1</version>
-        </dependency>
-    </dependencies>
-    
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <excludes>
-                        <exclude>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </exclude>
-                    </excludes>
-                </configuration>
-            </plugin>
-        </plugins>
-    </build>
-</project>`;
-  }
-
-  function generateApplicationProperties(): string {
-    return `# Database Configuration
-spring.datasource.url=jdbc:postgresql://localhost:5432/mydb
-spring.datasource.username=postgres
-spring.datasource.password=postgres
-spring.datasource.driver-class-name=org.postgresql.Driver
-
-# JPA Configuration
-spring.jpa.hibernate.ddl-auto=update
-spring.jpa.show-sql=true
-spring.jpa.properties.hibernate.format_sql=true
-spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
-
-# Server Configuration
-server.port=8080
-`;
-  }
-
-  function generateApplicationClass(): string {
-    return `package com.example;
-
-import org.modelmapper.ModelMapper;
-import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.context.annotation.Bean;
-
-@SpringBootApplication
-public class Application {
-    public static void main(String[] args) {
-        SpringApplication.run(Application.class, args);
-    }
-    
-    @Bean
-    public ModelMapper modelMapper() {
-        return new ModelMapper();
-    }
-}`;
-  }
 
   const relationButtons: Array<{
     key: Tool;
