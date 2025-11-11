@@ -1197,7 +1197,6 @@ export default function AIAssistant({
                             </div>
                           </div>
                         )}
-
                         {message.suggestions.relations && (
                           <div>
                             <h4 className="font-semibold text-sm mb-2 flex items-center gap-1">

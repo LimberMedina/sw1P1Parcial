@@ -604,7 +604,7 @@ export class AiAssistantService {
     }
 
     // --- Detectar multiplicidades explícitas cerca de los nombres de clase ---
-    const multiplicityPattern = /(1\.\.\*|1\.\.1|0\.\.1|0\.\.\*|\*)/;
+
     let sourceMultiplicity: string | undefined = undefined;
     let targetMultiplicity: string | undefined = undefined;
 
