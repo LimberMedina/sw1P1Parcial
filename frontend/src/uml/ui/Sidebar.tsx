@@ -6,6 +6,7 @@ import toast from "react-hot-toast";
 import JSZip from "jszip";
 import { startEdgeMode } from "../actions/edges";
 import type { EdgeShape } from "../actions/edges";
+import { FlutterCrudGenerator } from "../codegen/FlutterCrudGenerator";
 
 export type Tool =
   | "cursor"
@@ -767,13 +768,21 @@ export default function Sidebar({
 
         const edgeType = mapearTipoRelacion(edge.shape || data.type);
 
+        // ✅ LEER multSource y multTarget (nombres usados en el Editor)
+        const srcMult = String(
+          data.multSource || data.sourceMultiplicity || ""
+        ).trim();
+        const tgtMult = String(
+          data.multTarget || data.targetMultiplicity || ""
+        ).trim();
+
         return {
           source,
           target,
           type: edgeType,
           bidirectional: !!data.bidirectional,
-          sourceMultiplicity: String(data.sourceMultiplicity || "").trim(),
-          targetMultiplicity: String(data.targetMultiplicity || "").trim(),
+          sourceMultiplicity: srcMult,
+          targetMultiplicity: tgtMult,
           name: String(data.name || "").trim(),
           navigationProperty: String(data.navigationProperty || "").trim(),
         };
@@ -813,6 +822,136 @@ export default function Sidebar({
       toast.error("Error al generar el proyecto");
     }
   };
+
+  const handleGenerateFlutter = async () => {
+    try {
+      if (!graph) {
+        toast.error("Error: No se pudo acceder al diagrama");
+        return;
+      }
+
+      // ===== Extraer clases del diagrama =====
+      const clases = graph.getNodes().map((nodo: any, idx: number) => {
+        const data = nodo.getData?.() ?? {};
+        const rawName = data.name || `Clase_${idx + 1}`;
+        const className = sanitizeIdentifier(rawName, `Clase_${idx + 1}`);
+
+        const rawAttrs = coerceArrayOfLines(data.attributes);
+        const attributes = rawAttrs
+          .map((line, i) => {
+            const [n, t] = String(line).split(":");
+            const nombre = sanitizeIdentifier(n, `campo_${i + 1}`);
+            const tipo = String(t ?? "String").trim() || "String";
+            return `${nombre}: ${tipo}`;
+          })
+          .filter(Boolean);
+
+        const rawMethods = coerceArrayOfLines(data.methods);
+        const methods = rawMethods
+          .map((m) => {
+            const parsed = parseMethod(m);
+            if (parsed) {
+              const metodo = sanitizeIdentifier(parsed.nombre, "metodo");
+              const params = parsed.parametros
+                .map((p, k) => {
+                  const [pn, pt] = p.split(":");
+                  const pName = sanitizeIdentifier(pn, `p${k + 1}`);
+                  const pType = String(pt ?? "String").trim() || "String";
+                  return `${pName}: ${pType}`;
+                })
+                .join(", ");
+              const ret = String(parsed.tipoRetorno || "void").trim();
+              return `${metodo}(${params}): ${ret}`;
+            }
+            return m;
+          })
+          .filter(Boolean);
+
+        return {
+          name: String(className),
+          attributes,
+          methods,
+        };
+      });
+
+      if (!clases.length) {
+        toast.error("No hay clases en el diagrama");
+        return;
+      }
+
+      // ===== Extraer relaciones =====
+      const relaciones = graph.getEdges().map((edge: any) => {
+        const data = edge.getData?.() ?? {};
+        const source =
+          sanitizeIdentifier(
+            edge.getSourceCell?.()?.getData?.()?.name,
+            "Source"
+          ) || "Source";
+        const target =
+          sanitizeIdentifier(
+            edge.getTargetCell?.()?.getData?.()?.name,
+            "Target"
+          ) || "Target";
+
+        const edgeType = mapearTipoRelacion(edge.shape || data.type);
+
+        // ✅ LEER multSource y multTarget (nombres usados en el Editor)
+        const srcMult = String(
+          data.multSource || data.sourceMultiplicity || ""
+        ).trim();
+        const tgtMult = String(
+          data.multTarget || data.targetMultiplicity || ""
+        ).trim();
+
+        return {
+          source,
+          target,
+          type: edgeType,
+          bidirectional: !!data.bidirectional,
+          sourceMultiplicity: srcMult,
+          targetMultiplicity: tgtMult,
+          name: String(data.name || "").trim(),
+          navigationProperty: String(data.navigationProperty || "").trim(),
+        };
+      });
+
+      // ===== Crear generador Flutter =====
+      // Nota: 10.0.2.2 es el host de tu máquina desde el emulador Android;
+      // cámbialo por tu IP/puerto si vas a usar dispositivo físico o iOS.
+      const flutterGen = new FlutterCrudGenerator({
+        appName: "UmlCrudApp",
+        packageName: "com.example.umlcrud",
+        apiBaseUrl: "http://10.0.2.2:8080",
+      });
+
+      clases.forEach((cls) => flutterGen.addClass(cls));
+      relaciones.forEach((rel) => flutterGen.addRelation(rel));
+
+      const files = flutterGen.generateAll();
+
+      // ===== Zip & download =====
+      const zip = new JSZip();
+      Object.entries(files).forEach(([filename, content]) => {
+        zip.file(filename, String(content ?? ""));
+      });
+
+      const blob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "flutter-app.zip";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success("¡App Flutter CRUD generada!");
+    } catch (error) {
+      console.error("Error:", error);
+      toast.error("Error al generar la app Flutter");
+    }
+  };
+
   // ======= Auxiliares POM / properties / Application.java =======
 
   const relationButtons: Array<{
@@ -922,19 +1061,25 @@ export default function Sidebar({
               className="w-full flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
               title="Generar código Spring Boot"
             >
+              {/* ... ícono actual ... */}
+              Generar Código Spring Boot
+            </button>
+
+            {/* Nuevo botón Flutter */}
+            <button
+              onClick={handleGenerateFlutter}
+              className="w-full flex items-center justify-center gap-2 rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm font-medium text-green-700 hover:bg-green-100"
+              title="Generar App Flutter (CRUD)"
+            >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 className="h-5 w-5"
-                viewBox="0 0 20 20"
+                viewBox="0 0 24 24"
                 fill="currentColor"
               >
-                <path
-                  fillRule="evenodd"
-                  d="M12.316 3.051a1 1 0 01.633 1.265l-4 12a1 1 0 11-1.898-.632l4-12a1 1 0 011.265-.633zM5.707 6.293a1 1 0 010 1.414L3.414 10l2.293 2.293a1 1 0 11-1.414 1.414l-3-3a1 1 0 010-1.414l3-3a1 1 0 011.414 0zm8.586 0a1 1 0 011.414 0l3 3a1 1 0 010 1.414l-3 3a1 1 0 11-1.414-1.414L16.586 10l-2.293-2.293a1 1 0 010-1.414z"
-                  clipRule="evenodd"
-                />
+                <path d="M12 2l4 4-8 8-4-4 8-8zM8 18l2-2 6 6H8v-4z" />
               </svg>
-              Generar Código Spring Boot
+              Generar App Flutter (CRUD)
             </button>
           </div>
         </section>

@@ -471,13 +471,16 @@ Ejemplos de estilo:
                   <label className="block text-sm font-medium text-gray-700">
                     Multiplicidad (origen) - {sourceNodeData?.name || "Origen"}
                   </label>
-                  <input
-                    type="text"
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-gray-400"
+                  <select
                     value={multSource}
                     onChange={(e) => setMultSource(e.target.value)}
-                    placeholder="p. ej. 1..*, 0..1, 1..1"
-                  />
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none bg-white focus:border-gray-400"
+                  >
+                    <option value="1..*">1..*</option>
+                    <option value="0..*">0..*</option>
+                    <option value="0..1">0..1</option>
+                    <option value="1..1">1..1</option>
+                  </select>
                   <p className="mt-1 text-xs text-gray-500">
                     Aparecerá debajo del extremo de origen.
                   </p>
@@ -488,13 +491,16 @@ Ejemplos de estilo:
                     Multiplicidad (destino) -{" "}
                     {targetNodeData?.name || "Destino"}
                   </label>
-                  <input
-                    type="text"
-                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-gray-400"
+                  <select
                     value={multTarget}
                     onChange={(e) => setMultTarget(e.target.value)}
-                    placeholder="p. ej. 1..*, 0..1, 1..1"
-                  />
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none bg-white focus:border-gray-400"
+                  >
+                    <option value="1..*">1..*</option>
+                    <option value="0..*">0..*</option>
+                    <option value="0..1">0..1</option>
+                    <option value="1..1">1..1</option>
+                  </select>
                   <p className="mt-1 text-xs text-gray-500">
                     Aparecerá debajo del extremo de destino.
                   </p>
@@ -503,7 +509,7 @@ Ejemplos de estilo:
 
               <div className="rounded-md bg-gray-50 p-3 text-xs text-gray-600">
                 Sugerencias: <code>1..1</code>, <code>0..1</code>,{" "}
-                <code>1..*</code>, <code>0..*</code>, <code>*</code>.
+                <code>1..*</code>, <code>0..*</code>.
               </div>
             </div>
           )}

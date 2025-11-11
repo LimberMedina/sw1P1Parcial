@@ -240,4 +240,22 @@ export class ProjectsService {
 
     return true;
   }
+
+  /* =========================================================
+   * Eliminar proyecto (solo OWNER)
+   * Se elimina en cascada gracias a las reglas de Prisma
+   * =======================================================*/
+  async deleteProject(ownerId: string, projectId: string) {
+    const proj = await this.prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, ownerId: true },
+    });
+    if (!proj) throw new NotFoundException('Proyecto no encontrado');
+    if (proj.ownerId !== ownerId) throw new ForbiddenException('No autorizado');
+
+    // Eliminar proyecto (las relaciones con onDelete: Cascade se encargarán del resto)
+    await this.prisma.project.delete({ where: { id: projectId } });
+
+    return true;
+  }
 }

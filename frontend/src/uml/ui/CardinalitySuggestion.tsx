@@ -52,6 +52,8 @@ export default function CardinalitySuggestion({
   const [suggestion, setSuggestion] = useState<CardinalitySuggestion | null>(
     null
   );
+  const [sourceCard, setSourceCard] = useState<string>("1..*");
+  const [targetCard, setTargetCard] = useState<string>("*");
   const [applied, setApplied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,6 +75,9 @@ export default function CardinalitySuggestion({
       });
 
       setSuggestion(response.data);
+      // Inicializar las selecciones con la sugerencia de la IA (si existe)
+      setSourceCard(response.data.sourceCardinality || "1..*");
+      setTargetCard(response.data.targetCardinality || "*");
       setApplied(false);
     } catch (error) {
       console.error("Error getting cardinality suggestion:", error);
@@ -85,11 +90,8 @@ export default function CardinalitySuggestion({
   const applySuggestion = () => {
     if (!suggestion) return;
 
-    onApplySuggestion(
-      suggestion.sourceCardinality,
-      suggestion.targetCardinality,
-      suggestion.umlRelationType
-    );
+    // usar las selecciones del menú en lugar de escribir manualmente
+    onApplySuggestion(sourceCard, targetCard, suggestion.umlRelationType);
     setApplied(true);
   };
 
@@ -147,23 +149,37 @@ export default function CardinalitySuggestion({
               </p>
             </div>
 
-            {/* Cardinalidades */}
+            {/* Cardinalidades - Menús de selección para origen y destino */}
             <div className="mb-3 grid grid-cols-2 gap-4">
               <div className="text-sm">
-                <span className="font-medium text-gray-600">
+                <label className="block mb-1 font-medium text-gray-600">
                   De {sourceClass}:
-                </span>
-                <span className="ml-2 rounded bg-blue-100 px-2 py-1 font-mono text-blue-800">
-                  {suggestion.sourceCardinality}
-                </span>
+                </label>
+                <select
+                  value={sourceCard}
+                  onChange={(e) => setSourceCard(e.target.value)}
+                  className="w-full rounded border px-2 py-1 text-sm bg-white"
+                >
+                  <option value="1..*">1..*</option>
+                  <option value="0..*">0..*</option>
+                  <option value="0..1">0..1</option>
+                  <option value="1..1">1..1</option>
+                </select>
               </div>
               <div className="text-sm">
-                <span className="font-medium text-gray-600">
+                <label className="block mb-1 font-medium text-gray-600">
                   A {targetClass}:
-                </span>
-                <span className="ml-2 rounded bg-green-100 px-2 py-1 font-mono text-green-800">
-                  {suggestion.targetCardinality}
-                </span>
+                </label>
+                <select
+                  value={targetCard}
+                  onChange={(e) => setTargetCard(e.target.value)}
+                  className="w-full rounded border px-2 py-1 text-sm bg-white"
+                >
+                  <option value="1..*">1..*</option>
+                  <option value="0..*">0..*</option>
+                  <option value="0..1">0..1</option>
+                  <option value="1..1">1..1</option>
+                </select>
               </div>
             </div>
 

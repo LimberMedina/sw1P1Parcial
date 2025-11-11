@@ -5,7 +5,7 @@ import { MiniMap as X6MiniMap } from "@antv/x6-plugin-minimap";
 import { Export } from "@antv/x6-plugin-export";
 import type { Tool } from "./Sidebar";
 import { IconCenter, IconCursor, IconZoomIn, IconZoomOut } from "../icons";
-import { Save, Share2, Download, ChevronDown, FileImage } from "lucide-react";
+import { Save, Share2, Download, ChevronDown } from "lucide-react";
 import toast from "react-hot-toast";
 
 type Props = {
@@ -17,7 +17,6 @@ type Props = {
   exportName?: string;
   onGetShareLink?: () => Promise<string>;
   canShare?: boolean;
-  onImportFromImage?: (file: File) => Promise<void>;
 };
 
 /** Crea u obtiene un div persistente en body (no se remueve nunca) */
@@ -40,9 +39,8 @@ export default function DiagramControls({
   disabled = false,
   exportName = "diagram",
   onGetShareLink,
-  onImportFromImage,
 }: Props) {
-  // ---- Estado mínimo de UI (no se usa durante import) ----
+  // ---- Estado mínimo de UI ----
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [sharing, setSharing] = useState(false);
 
@@ -261,90 +259,6 @@ export default function DiagramControls({
     }
   };
 
-  // ===== Importar SIN setState (imperativo) =====
-  const importBtnRef = useRef<HTMLButtonElement | null>(null);
-  const importBtnContentRef = useRef<HTMLSpanElement | null>(null);
-  const importingRef = useRef(false); // no causa re-render
-
-  const setImportingUI = (isOn: boolean) => {
-    const btn = importBtnRef.current;
-    const span = importBtnContentRef.current;
-    if (!btn || !span) return;
-    if (isOn) {
-      btn.disabled = true;
-      btn.classList.add("opacity-50", "cursor-not-allowed");
-      // Spinner simple + texto (sin re-render)
-      span.innerHTML =
-        '<span class="inline-block align-middle" style="width:16px;height:16px;border:2px solid currentColor;border-top-color:transparent;border-radius:9999px;animation:spin 0.8s linear infinite;margin-right:6px"></span>Analizando...';
-      // inyectar keyframes spin si no existe
-      if (!document.getElementById("__spin_keyframes")) {
-        const style = document.createElement("style");
-        style.id = "__spin_keyframes";
-        style.textContent = "@keyframes spin{to{transform:rotate(360deg)}}";
-        document.head.appendChild(style);
-      }
-    } else {
-      btn.disabled = false;
-      btn.classList.remove("opacity-50", "cursor-not-allowed");
-      span.innerHTML = `<span class="inline-flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>Importar</span>`;
-    }
-  };
-
-  const handleImportClick = () => {
-    if (!onImportFromImage || importingRef.current) return;
-
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (!file) return;
-
-      if (!file.type.startsWith("image/")) {
-        toast.error("Por favor selecciona un archivo de imagen válido");
-        return;
-      }
-      if (file.size > 10 * 1024 * 1024) {
-        toast.error("La imagen es demasiado grande. Máximo 10MB");
-        return;
-      }
-
-      importingRef.current = true;
-      setImportingUI(true);
-
-      try {
-        toast.loading("Analizando imagen con IA...", { id: "import-image" });
-        await onImportFromImage(file);
-        toast.success("¡Diagrama importado exitosamente! ✨", {
-          id: "import-image",
-        });
-      } catch (error: any) {
-        console.error("Error importing image:", error);
-        let errorMessage = "Error al procesar la imagen";
-
-        if (error?.message?.includes("No se pudieron detectar clases")) {
-          errorMessage =
-            "No se detectaron clases UML en la imagen. Intenta con una imagen más clara.";
-        } else if (error?.message?.includes("No tienes permisos")) {
-          errorMessage = "No tienes permisos para editar este diagrama.";
-        } else if (error?.message?.includes("demasiado grande")) {
-          errorMessage = "La imagen es demasiado grande. Máximo 10MB.";
-        } else if (error?.message) {
-          errorMessage = error.message;
-        }
-
-        toast.error(errorMessage, { id: "import-image" });
-      } finally {
-        importingRef.current = false;
-        setImportingUI(false);
-      }
-    };
-
-    // Abrir selector
-    input.click();
-  };
-
   // ===== Toolbar UI (portal) =====
   const toolbar = (
     <div
@@ -447,31 +361,6 @@ export default function DiagramControls({
             </div>
           )}
         </div>
-
-        {/* Importar desde imagen (imperativo, sin setState) */}
-        {onImportFromImage && (
-          <>
-            <span className="mx-1 h-6 w-px bg-gray-200" />
-            <button
-              ref={importBtnRef}
-              onClick={handleImportClick}
-              disabled={toolbarDisabled} // solo depende de disabled/graph (estables)
-              title="Importar diagrama desde imagen"
-              className={
-                "rounded-xl px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-1"
-              }
-            >
-              {/* Contenido modificable sin re-render */}
-              <span
-                ref={importBtnContentRef}
-                className="inline-flex items-center gap-1"
-              >
-                <FileImage className="h-4 w-4" />
-                Importar
-              </span>
-            </button>
-          </>
-        )}
 
         {/* Compartir */}
         {onGetShareLink && (

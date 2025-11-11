@@ -55,22 +55,6 @@ const roleRank: Record<UiRole, number> = {
   VIEWER: 1,
 };
 
-interface AiResponse {
-  content: string;
-  suggestions?: {
-    classes: Array<{
-      name: string;
-      attributes: string[];
-      methods: string[];
-    }>;
-    relations?: Array<{
-      from: string;
-      to: string;
-      type: string;
-    }>;
-  };
-}
-
 function promoteRole(
   current: UiRole | null,
   next: UiRole | null
@@ -132,7 +116,7 @@ const EDGE_STYLE: Record<EdgeKind, any> = {
     dashed: false,
     targetMarker: null,
     sourceMarker: null,
-    stroke: "#7C3AED", // Color morado para diferenciarlo
+    stroke: "#7C3AED",
     strokeWidth: 2,
   },
 };
@@ -1372,6 +1356,26 @@ export default function Editor() {
     graph.on("scale", () => setTransformTick((t) => t + 1));
     graph.on("translate", () => setTransformTick((t) => t + 1));
 
+    // Listener para actualización de clases desde AI Assistant
+    const handleClassUpdate = (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { nodeId, node } = customEvent.detail || {};
+
+      if (node && node.shape === "uml-class") {
+        resizeUmlClass(node);
+        // Sincronizar cambios con Y.Doc para colaboración en tiempo real
+        requestAnimationFrame(() => pushSnapshotToYDoc());
+      } else if (nodeId) {
+        const foundNode = graph.getCellById(nodeId);
+        if (foundNode && (foundNode as any).shape === "uml-class") {
+          resizeUmlClass(foundNode as any);
+          // Sincronizar cambios con Y.Doc para colaboración en tiempo real
+          requestAnimationFrame(() => pushSnapshotToYDoc());
+        }
+      }
+    };
+    window.addEventListener("uml:class:updated", handleClassUpdate);
+
     const handleBlankClick = ({ x, y }: { x: number; y: number }) => {
       if (!placingNodeKindRef.current) return;
       addClassAt(graph, x, y);
@@ -1413,6 +1417,7 @@ export default function Editor() {
       window.removeEventListener("resize", resize);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("keydown", onKeyDownForMenu);
+      window.removeEventListener("uml:class:updated", handleClassUpdate);
       if (containerRef.current) {
         containerRef.current.removeEventListener(
           "contextmenu",
@@ -1733,277 +1738,106 @@ export default function Editor() {
     }
   };
 
-  // ...existing code...
+  // Handlers básicos para el AIAssistant
+  const handleAddClassFromAI = (
+    className: string,
+    attributes: string[],
+    methods: string[]
+  ) => {
+    if (!graphRef.current) return;
 
-  const handleImportFromImage = async (file: File) => {
-    if (!graphRef.current || !canEdit) {
-      throw new Error("No tienes permisos para editar este diagrama");
-    }
+    const existing = graphRef.current.getNodes();
+    const count = existing.length;
+    const cols = Math.ceil(Math.sqrt(count + 1));
+    const row = Math.floor(count / cols);
+    const col = count % cols;
+    const spacing = 250;
+    const startX = 200;
+    const startY = 150;
+    const x = startX + col * spacing;
+    const y = startY + row * spacing;
 
-    const formData = new FormData();
-    formData.append("image", file);
+    const node = graphRef.current.addNode({
+      shape: "uml-class",
+      x,
+      y,
+      width: (CLASS_SIZES as any).WIDTH,
+      height: (CLASS_SIZES as any).HEIGHT,
+      attrs: {
+        name: { text: className },
+        attrs: { text: attributes.join("\n") },
+        methods: { text: methods.join("\n") },
+      },
+      zIndex: 2,
+      data: { name: className, attributes, methods },
+    }) as any;
 
-    try {
-      console.log("🔍 Enviando imagen para análisis...");
+    resizeUmlClass(node);
+    pushSnapshotToYDoc();
+  };
 
-      const response = await fetch("/api/ai/analyze-image", {
-        method: "POST",
-        headers: {
-          ...(effectiveToken
-            ? { Authorization: `Bearer ${effectiveToken}` }
-            : {}),
+  const handleAddRelationFromAI = (
+    from: string,
+    to: string,
+    type: string,
+    multiplicity?: { source?: string; target?: string }
+  ) => {
+    if (!graphRef.current) return;
+
+    const nodes = graphRef.current.getNodes();
+    const sourceNode = nodes.find((n: any) => n.getData()?.name === from);
+    const targetNode = nodes.find((n: any) => n.getData()?.name === to);
+
+    if (!(sourceNode && targetNode)) return;
+
+    const normalizedType = type.toLowerCase();
+    const typeMapping: Record<string, EdgeKind> = {
+      assoc: "assoc",
+      inherit: "inherit",
+      comp: "comp",
+      aggr: "aggr",
+      dep: "dep",
+      "many-to-many": "many-to-many",
+      nav: "nav",
+    };
+
+    const edgeKind: EdgeKind = typeMapping[normalizedType] || "assoc";
+    const edgeStyle = EDGE_STYLE[edgeKind] || EDGE_STYLE.assoc;
+
+    const sc = sourceNode.getBBox().center;
+    const tc = targetNode.getBBox().center;
+    const sourceSide = pickSide(sc, tc);
+    const targetSide = opposite(sourceSide);
+    const sourcePort = allocPortPreferMiddle(sourceNode.id, sourceSide);
+    const targetPort = allocPortPreferMiddle(targetNode.id, targetSide);
+
+    const edge = graphRef.current.addEdge({
+      attrs: {
+        line: {
+          stroke: edgeStyle.stroke ?? "#374151",
+          strokeWidth: edgeStyle.strokeWidth ?? 1.5,
+          strokeDasharray: edgeStyle.dashed ? 4 : undefined,
+          sourceMarker: edgeStyle.sourceMarker ?? null,
+          targetMarker: edgeStyle.targetMarker ?? null,
         },
-        body: formData,
-      });
+      },
+      zIndex: 1000,
+      router: ROUTER_CONFIG.orth,
+      connector: CONNECTOR_CONFIG.rounded,
+      source: { cell: sourceNode.id, port: sourcePort },
+      target: { cell: targetNode.id, port: targetPort },
+      data: {
+        name: "",
+        multSource: multiplicity?.source || "",
+        multTarget: multiplicity?.target || "",
+        type: edgeKind,
+        routerType: "orth",
+        connectorType: "rounded",
+      },
+    });
 
-      if (!componentMountedRef.current) return;
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("❌ Error en análisis:", response.status, errorText);
-
-        let errorMessage = "Error al procesar la imagen";
-        if (response.status === 413) {
-          errorMessage = "La imagen es demasiado grande";
-        } else if (response.status === 400) {
-          errorMessage = "Formato de imagen no válido";
-        } else if (response.status === 500) {
-          errorMessage = "Error interno del servidor";
-        }
-
-        throw new Error(errorMessage);
-      }
-
-      const result: AiResponse = await response.json();
-      console.log("Respuesta del análisis:", result);
-
-      if (
-        !result.suggestions ||
-        !result.suggestions.classes ||
-        !result.suggestions.classes.length
-      ) {
-        if (result.content && result.content.length > 0) {
-          throw new Error(result.content);
-        }
-        throw new Error(
-          "No se pudieron detectar clases en la imagen. Asegúrate de que sea un diagrama UML claro con texto legible."
-        );
-      }
-
-      const graph = graphRef.current;
-      if (!graph) return;
-
-      requestAnimationFrame(() => {
-        if (!componentMountedRef.current) return;
-
-        const classNames = result
-          .suggestions!.classes.map((c) => c.name)
-          .join(", ");
-
-        const shouldClear = window.confirm(
-          `Se detectaron ${
-            result.suggestions!.classes.length
-          } clases: ${classNames}\n\n¿Deseas agregar estas clases al diagrama actual?\n\nPresiona "Aceptar" para agregar o "Cancelar" para abortar.`
-        );
-
-        if (!shouldClear) {
-          toast("Importación cancelada por el usuario", {
-            icon: "ℹ️",
-            style: {
-              background: "#3b82f6",
-              color: "#fff",
-            },
-          });
-          return;
-        }
-
-        graph.batchUpdate(() => {
-          // Calcular posiciones para evitar solapamiento
-          const existingNodes = graph.getNodes();
-          const classCount = result.suggestions!.classes.length;
-          const cols = Math.max(2, Math.ceil(Math.sqrt(classCount)));
-          const spacing = 300;
-
-          let startX = 150;
-          let startY = 150;
-
-          // Si ya hay nodos, posicionar a la derecha
-          if (existingNodes.length > 0) {
-            const positions = existingNodes.map((n) => n.getBBox());
-            const maxX = Math.max(...positions.map((p) => p.x + p.width));
-            startX = Math.max(150, maxX + 100);
-            startY = 150;
-          }
-
-          // Crear nodos para cada clase detectada
-          const createdNodes: Record<string, any> = {};
-
-          result.suggestions!.classes.forEach((classData, index) => {
-            const row = Math.floor(index / cols);
-            const col = index % cols;
-            const x = startX + col * spacing;
-            const y = startY + row * spacing;
-
-            // Limpiar y validar atributos
-            const cleanAttributes = classData.attributes
-              .filter((attr) => attr && attr.trim().length > 0)
-              .map((attr) => attr.trim())
-              .slice(0, 10); // Limitar a 10 atributos
-
-            // Limpiar y validar métodos
-            const cleanMethods = classData.methods
-              .filter((method) => method && method.trim().length > 0)
-              .map((method) => method.trim())
-              .slice(0, 10); // Limitar a 10 métodos
-
-            // Crear el nodo con los datos limpios
-            const node = graph.addNode({
-              shape: "uml-class",
-              x,
-              y,
-              width: (CLASS_SIZES as any).WIDTH,
-              height: (CLASS_SIZES as any).HEIGHT,
-              attrs: {
-                name: { text: classData.name },
-                attrs: { text: cleanAttributes.join("\n") },
-                methods: { text: cleanMethods.join("\n") },
-              },
-              zIndex: 2,
-              data: {
-                name: classData.name,
-                attributes: cleanAttributes,
-                methods: cleanMethods,
-              },
-            }) as any;
-
-            createdNodes[classData.name] = node;
-
-            console.log(`✅ Clase creada: ${classData.name}`, {
-              attributes: cleanAttributes.length,
-              methods: cleanMethods.length,
-              position: { x, y },
-            });
-          });
-
-          // Aplicar resize a todos los nodos creados
-          Object.values(createdNodes).forEach((node) => {
-            resizeUmlClass(node);
-          });
-
-          // Crear relaciones detectadas (si las hay)
-          if (
-            result.suggestions!.relations &&
-            result.suggestions!.relations.length > 0
-          ) {
-            result.suggestions!.relations.forEach((relation) => {
-              const sourceNode = createdNodes[relation.from];
-              const targetNode = createdNodes[relation.to];
-
-              if (sourceNode && targetNode) {
-                try {
-                  // Mapear tipos de relación AI a tipos UML
-                  const relationTypeMap: Record<string, EdgeKind> = {
-                    ASSOCIATION: "assoc",
-                    INHERITANCE: "inherit",
-                    COMPOSITION: "comp",
-                    AGGREGATION: "aggr",
-                    ONE_TO_ONE: "assoc",
-                    ONE_TO_MANY: "assoc",
-                    MANY_TO_ONE: "assoc",
-                    MANY_TO_MANY: "many-to-many",
-                  };
-
-                  const edgeKind: EdgeKind =
-                    relationTypeMap[relation.type] || "assoc";
-                  const style = EDGE_STYLE[edgeKind];
-
-                  // Calcular posición y puertos
-                  const sc = sourceNode.getBBox().center;
-                  const tc = targetNode.getBBox().center;
-                  const sourceSide = pickSide(sc, tc);
-                  const targetSide = opposite(sourceSide);
-                  const sourcePort = allocPortPreferMiddle(
-                    sourceNode.id,
-                    sourceSide
-                  );
-                  const targetPort = allocPortPreferMiddle(
-                    targetNode.id,
-                    targetSide
-                  );
-
-                  // Crear la arista
-                  const edge = graph.addEdge({
-                    attrs: {
-                      line: {
-                        stroke: style.stroke ?? "#6366f1",
-                        strokeWidth: style.strokeWidth ?? 1.5,
-                        strokeDasharray: style.dashed ? 4 : undefined,
-                        sourceMarker: style.sourceMarker ?? null,
-                        targetMarker: style.targetMarker ?? null,
-                      },
-                    },
-                    zIndex: 1000,
-                    router: ROUTER_CONFIG.normal,
-                    connector: CONNECTOR_CONFIG.smooth,
-                    source: { cell: sourceNode.id, port: sourcePort },
-                    target: { cell: targetNode.id, port: targetPort },
-                    data: {
-                      name: relation.type,
-                      multSource: "",
-                      multTarget: "",
-                      routerType: "normal",
-                      connectorType: "smooth",
-                    },
-                  });
-
-                  applyEdgeLabels(edge);
-
-                  console.log(
-                    `✅ Relación creada: ${relation.from} → ${relation.to} (${relation.type})`
-                  );
-                } catch (edgeError) {
-                  console.warn("Error creando relación:", edgeError);
-                }
-              }
-            });
-          }
-        });
-
-        // Centrar y ajustar vista después de crear todo
-        setTimeout(() => {
-          if (!componentMountedRef.current) return;
-          graph.centerContent();
-          graph.zoomToFit({ padding: 50, maxScale: 1 });
-        }, 100);
-
-        // Mensaje de éxito detallado
-        const relationsCount =
-          (result.suggestions!.relations &&
-            result.suggestions!.relations.length) ||
-          0;
-
-        toast.success(
-          `✨ ¡Importación exitosa!\n🏗️ ${
-            result.suggestions!.classes.length
-          } clases creadas${
-            relationsCount > 0
-              ? `\n🔗 ${relationsCount} relaciones agregadas`
-              : ""
-          }`
-        );
-
-        // Disparar autosave para persistir los cambios
-        if (canEdit) {
-          pushSnapshotToYDoc();
-        }
-      });
-    } catch (error: any) {
-      if (!componentMountedRef.current) return;
-
-      console.error("Error importing from image:", error);
-      const errorMessage = error?.message || "Error al procesar la imagen";
-      throw new Error(errorMessage);
-    }
+    applyEdgeLabels(edge);
+    pushSnapshotToYDoc();
   };
 
   const goToRegister = () => navigate("/register");
@@ -2164,7 +1998,6 @@ export default function Editor() {
                 }
               : async () => window.location.href
           }
-          onImportFromImage={canEdit ? handleImportFromImage : undefined}
         />
 
         {loading && (
@@ -2239,95 +2072,11 @@ export default function Editor() {
           />
         )}
       </div>
-      {/* REEMPLAZAR la llamada al AIAssistant con todas las props necesarias: */}
+      {/* AIAssistant con handlers estables */}
       <AIAssistant
         graph={graphRef.current}
-        onAddClass={(className, attributes, methods) => {
-          if (!graphRef.current || !canEdit) return;
-          const existing = graphRef.current.getNodes();
-          const count = existing.length;
-          const cols = Math.ceil(Math.sqrt(count + 1));
-          const row = Math.floor(count / cols);
-          const col = count % cols;
-          const spacing = 250;
-          const startX = 200;
-          const startY = 150;
-          const x = startX + col * spacing;
-          const y = startY + row * spacing;
-
-          const node = graphRef.current.addNode({
-            shape: "uml-class",
-            x,
-            y,
-            width: (CLASS_SIZES as any).WIDTH,
-            height: (CLASS_SIZES as any).HEIGHT,
-            attrs: {
-              name: { text: className },
-              attrs: { text: attributes.join("\n") },
-              methods: { text: methods.join("\n") },
-            },
-            zIndex: 2,
-            data: { name: className, attributes, methods },
-          }) as any;
-          resizeUmlClass(node);
-
-          pushSnapshotToYDoc();
-        }}
-        onAddRelation={(from, to, type) => {
-          if (!graphRef.current || !canEdit) return;
-          const nodes = graphRef.current.getNodes();
-          const sourceNode = nodes.find((n: any) => n.getData()?.name === from);
-          const targetNode = nodes.find((n: any) => n.getData()?.name === to);
-          if (!(sourceNode && targetNode)) return;
-
-          const typeMapping: Record<string, EdgeKind> = {
-            ONE_TO_ONE: "assoc",
-            ONE_TO_MANY: "assoc",
-            MANY_TO_ONE: "assoc",
-            MANY_TO_MANY: "many-to-many",
-            ASSOCIATION: "assoc",
-            INHERITANCE: "inherit",
-            COMPOSITION: "comp",
-            AGGREGATION: "aggr",
-            DEPENDENCY: "dep",
-          };
-
-          const edgeKind: EdgeKind = typeMapping[type] || "assoc";
-          const edgeStyle = EDGE_STYLE[edgeKind] || EDGE_STYLE.assoc;
-
-          const sc = sourceNode.getBBox().center;
-          const tc = targetNode.getBBox().center;
-          const sourceSide = pickSide(sc, tc);
-          const targetSide = opposite(sourceSide);
-          const sourcePort = allocPortPreferMiddle(sourceNode.id, sourceSide);
-          const targetPort = allocPortPreferMiddle(targetNode.id, targetSide);
-
-          const edge = graphRef.current.addEdge({
-            attrs: {
-              line: {
-                stroke: edgeStyle.stroke ?? "#6366f1",
-                strokeWidth: edgeStyle.strokeWidth ?? 1.5,
-                strokeDasharray: edgeStyle.dashed ? 4 : undefined,
-                sourceMarker: edgeStyle.sourceMarker ?? null,
-                targetMarker: edgeStyle.targetMarker ?? null,
-              },
-            },
-            zIndex: 1000,
-            router: { name: "orth", args: { padding: 6 } },
-            connector: { name: "rounded" },
-            source: { cell: sourceNode.id, port: sourcePort },
-            target: { cell: targetNode.id, port: targetPort },
-            data: {
-              name: type === "INHERITANCE" ? "extends" : "",
-              multSource: "",
-              multTarget: "",
-              type: edgeKind,
-            },
-          });
-          applyEdgeLabels(edge);
-
-          pushSnapshotToYDoc();
-        }}
+        onAddClass={handleAddClassFromAI}
+        onAddRelation={handleAddRelationFromAI}
         onToolChange={(newTool: Tool) => {
           setTool(newTool);
           onToolClick(newTool);

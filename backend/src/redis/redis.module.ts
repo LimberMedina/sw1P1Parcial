@@ -5,14 +5,14 @@ import Redis, { RedisOptions } from 'ioredis';
 function makeRedis(urlEnv?: string) {
   const url = urlEnv ?? 'redis://localhost:6379';
   const client = new Redis(url, {
-    // Evita MaxRetriesPerRequestError al iniciar si Redis demora
+   
     maxRetriesPerRequest: null,
     enableReadyCheck: true,
-    retryStrategy: (times) => Math.min(times * 200, 2000), // backoff hasta 2s
+    retryStrategy: (times) => Math.min(times * 200, 2000), 
   } as RedisOptions);
 
   client.on('error', (err) => {
-    // Log útil para diagnosticar (host/puerto incorrectos, firewall, etc.)
+    
     console.error('[Redis] error:', err?.message ?? err);
   });
   client.on('connect', () => console.log('[Redis] connected'));

@@ -31,7 +31,16 @@ export interface AssistantResponse {
   message: string;
   suggestions?: {
     classes?: Array<{ name: string; attributes: string[]; methods: string[] }>;
-    relations?: Array<{ from: string; to: string; type: string }>;
+    relations?: Array<{
+      from: string;
+      to: string;
+      type: string;
+      // multiplicity opcional para each end
+      multiplicity?: {
+        source?: string;
+        target?: string;
+      };
+    }>;
   };
   tips?: string[];
   nextSteps?: string[];
@@ -42,6 +51,74 @@ export interface AssistantResponse {
 @Injectable()
 export class AiAssistantService {
   constructor(private readonly aiService: AiService) {}
+
+  /**
+   * Convierte el resultado del scan de imagen en sugerencias del asistente
+   * que el frontend puede interpretar y ejecutar automáticamente
+   */
+  async convertScanToSuggestions(scanResult: any): Promise<AssistantResponse> {
+    console.log('[AiAssistant] Convirtiendo scan a sugerencias:', {
+      classCount: scanResult.classes?.length || 0,
+      relationCount: scanResult.relations?.length || 0,
+    });
+
+    // Convertir las clases del scan al formato de sugerencias
+    const classSuggestions = (scanResult.classes || []).map((cls: any) => ({
+      name: cls.name,
+      attributes: cls.attributes || [],
+      methods: cls.methods || [],
+    }));
+
+    // Convertir las relaciones del scan al formato de sugerencias
+    const relationSuggestions = (scanResult.relations || []).map(
+      (rel: any) => ({
+        from: rel.from,
+        to: rel.to,
+        type: rel.type || 'assoc',
+        multiplicity: rel.multiplicity
+          ? {
+              source: rel.multiplicity.source
+                ? String(rel.multiplicity.source).trim()
+                : undefined,
+              target: rel.multiplicity.target
+                ? String(rel.multiplicity.target).trim()
+                : undefined,
+            }
+          : undefined,
+      }),
+    );
+
+    const message =
+      `✨ **Diagrama detectado desde imagen:**\n\n` +
+      `📦 **${classSuggestions.length} clases encontradas:** ${classSuggestions.map((c) => c.name).join(', ')}\n` +
+      `🔗 **${relationSuggestions.length} relaciones detectadas**\n\n` +
+      `${scanResult.description || 'Diagrama UML de clases'}\n\n` +
+      `⭐ **Confianza:** ${scanResult.confidence || 'medium'}\n\n` +
+      `Las clases y relaciones se crearán automáticamente.`;
+
+    console.log('[AiAssistant] Sugerencias generadas:', {
+      classes: classSuggestions.length,
+      relations: relationSuggestions.length,
+    });
+
+    return {
+      message,
+      suggestions: {
+        classes: classSuggestions,
+        relations: relationSuggestions,
+      },
+      tips: [
+        '🎨 Las clases se crearán automáticamente en el editor',
+        '🔗 Las relaciones se conectarán después de crear las clases',
+        '✏️ Puedes editar cualquier clase después de crearla',
+      ],
+      nextSteps: [
+        'Revisa las clases creadas',
+        'Verifica las relaciones',
+        'Edita o agrega más detalles si es necesario',
+      ],
+    };
+  }
 
   async getContextualHelp(
     context: DiagramContext,
@@ -296,12 +373,349 @@ export class AiAssistantService {
     return x;
   }
 
+  private parseEditClassCommand(msg: string, context: DiagramContext) {
+    // Patrones: "agrega atributo id a clase Usuario", "añade nombre:String y edad:Integer a la tabla Persona"
+    // "agrega método calcular() a clase Producto"
+
+    console.log('[parseEditClassCommand] Mensaje original:', msg);
+
+    const normalizedMsg = this.normalize(msg);
+
+    // Detectar si es agregar atributo o método
+    const isAttribute =
+      normalizedMsg.includes('atributo') || normalizedMsg.includes('atributos');
+    const isMethod =
+      normalizedMsg.includes('metodo') || normalizedMsg.includes('metodos');
+
+    console.log('[parseEditClassCommand] Detección:', {
+      isAttribute,
+      isMethod,
+      normalizedMsg,
+    });
+
+    if (!isAttribute && !isMethod) return null;
+
+    // Extraer nombre de la clase objetivo: "a clase X", "en clase X", "de la tabla X", etc.
+    const classMatch = msg.match(
+      /(?:(?:a|en|de|para)\s+(?:la\s+)?(?:clase|tabla)\s+)([a-z0-9_][\w-]*)/i,
+    );
+
+    if (!classMatch) return null;
+
+    const targetClassName = classMatch[1].trim();
+
+    // Buscar el nodo en el contexto
+    const targetNode = context.nodes.find(
+      (n) => this.normalize(n.name) === this.normalize(targetClassName),
+    );
+
+    if (!targetNode) {
+      return {
+        error: `No encontré la clase "${targetClassName}" en el diagrama. Clases disponibles: ${context.nodes.map((n) => n.name).join(', ')}`,
+        targetClassName,
+      };
+    }
+
+    // Extraer atributos/métodos a agregar
+    let newAttributes: string[] = [];
+    let newMethods: string[] = [];
+
+    if (isAttribute) {
+      // Extraer desde "agrega" hasta " a/en/de/para clase/tabla" (más flexible)
+      // El regex ahora excluye mejor los artículos y la palabra "atributo(s)"
+      const attrText = msg.match(
+        /(?:agrega|añade|anade)\s+(?:(?:el|la|los|las|un|una)\s+)?(?:atributo?\s+)?(.+?)(?:\s+(?:a|en|de|para)\s+(?:la\s+)?(?:clase|tabla))/i,
+      );
+
+      console.log('[parseEditClassCommand] Regex match resultado:', attrText);
+
+      if (attrText?.[1]) {
+        const rawAttrs = attrText[1].trim();
+
+        console.log('[parseEditClassCommand] Raw attributes:', rawAttrs);
+
+        // Separar por comas o 'y'
+        const attrParts = rawAttrs.split(/\s*(?:,|y)\s*/i).filter(Boolean);
+
+        console.log('[parseEditClassCommand] Attribute parts:', attrParts);
+
+        newAttributes = attrParts.map((p, i) => {
+          p = p.trim();
+
+          // 🧹 LIMPIAR palabras comunes que no son parte del atributo (segunda capa de limpieza)
+          // Remover artículos y palabras de relleno que puedan haber quedado
+          p = p.replace(
+            /^(?:el|la|los|las|un|una|unos|unas|atributo|atributos)\s+/gi,
+            '',
+          );
+          p = p.trim();
+
+          console.log(`[parseEditClassCommand] Atributo limpio [${i}]:`, p);
+
+          // Soportar "id:Integer", "nombre: String", "Integer id", "id"
+          const colonMatch = p.match(/^(\w+)\s*:\s*(\w+)$/);
+          if (colonMatch) {
+            return `${this.safeId(colonMatch[1])}: ${colonMatch[2]}`;
+          }
+
+          const spaceMatch = p.match(/^([A-Z]\w+)\s+(\w+)$/);
+          if (spaceMatch) {
+            return `${this.safeId(spaceMatch[2])}: ${spaceMatch[1]}`;
+          }
+
+          // Solo nombre → String por defecto
+          return `${this.safeId(p)}: String`;
+        });
+      }
+    }
+
+    if (isMethod) {
+      // Extraer desde "agrega" hasta " a/en/de/para clase/tabla" (más flexible)
+      // El regex ahora excluye mejor los artículos y la palabra "método(s)"
+      const methodText = msg.match(
+        /(?:agrega|añade|anade)\s+(?:(?:el|la|los|las|un|una)\s+)?(?:metodos?\s+)?(.+?)(?:\s+(?:a|en|de|para)\s+(?:la\s+)?(?:clase|tabla))/i,
+      );
+
+      if (methodText?.[1]) {
+        const rawMethods = methodText[1].trim();
+        const methodParts = rawMethods.split(/\s*(?:,|y)\s*/i).filter(Boolean);
+
+        newMethods = methodParts.map((m) => {
+          m = m.trim();
+
+          // 🧹 LIMPIAR palabras comunes que no son parte del método
+          m = m.replace(
+            /^(?:el|la|los|las|un|una|unos|unas|metodo|metodos|método|métodos)\s+/gi,
+            '',
+          );
+          m = m.trim();
+
+          console.log('[parseEditClassCommand] Método limpio:', m);
+
+          // Asegurar que tenga paréntesis
+          if (!m.includes('(')) {
+            m = `${m}()`;
+          }
+          return m;
+        });
+      }
+    }
+
+    console.log('[parseEditClassCommand] Resultado final:', {
+      targetClassName: targetNode.name,
+      newAttributes,
+      newMethods,
+      currentAttributes: targetNode.attributes || [],
+      currentMethods: targetNode.methods || [],
+    });
+
+    return {
+      targetNodeId: targetNode.id,
+      targetClassName: targetNode.name,
+      newAttributes,
+      newMethods,
+      currentAttributes: targetNode.attributes || [],
+      currentMethods: targetNode.methods || [],
+    };
+  }
+
+  private parseAddRelationCommand(msg: string, context: DiagramContext) {
+    // Patrones: "crea una relación de agregación de alumno a docente"
+    // "añade una asociación entre Usuario y Producto"
+    // "agrega herencia de Estudiante hacia Persona"
+
+    console.log('[parseAddRelationCommand] Mensaje original:', msg);
+
+    const normalizedMsg = this.normalize(msg);
+
+    // Detectar tipo de relación
+    let relationType: string | null = null;
+    const relationMap = {
+      asociacion: 'assoc',
+      herencia: 'inherit',
+      generalizacion: 'inherit',
+      composicion: 'comp',
+      agregacion: 'aggr',
+      dependencia: 'dep',
+      'muchos a muchos': 'many-to-many',
+      'muchos-a-muchos': 'many-to-many',
+    };
+
+    for (const [key, value] of Object.entries(relationMap)) {
+      if (normalizedMsg.includes(key)) {
+        relationType = value;
+        break;
+      }
+    }
+
+    if (!relationType) {
+      // Si no especifica tipo, asumir asociación por defecto
+      relationType = 'assoc';
+    }
+
+    console.log('[parseAddRelationCommand] Tipo de relación:', relationType);
+
+    // Extraer clases origen y destino
+    // Patrones: "de X a Y", "de X hacia Y", "entre X y Y", "desde X hasta Y"
+    let sourceClassName: string | null = null;
+    let targetClassName: string | null = null;
+
+    // Patrón 1: "de X a/hacia Y"
+    const pattern1 = msg.match(
+      /(?:de|desde)\s+(?:la\s+)?(?:clase|tabla)?\s*([a-z0-9_][\w-]*)\s+(?:a|hacia|hasta)\s+(?:la\s+)?(?:clase|tabla)?\s*([a-z0-9_][\w-]*)/i,
+    );
+
+    if (pattern1) {
+      sourceClassName = pattern1[1].trim();
+      targetClassName = pattern1[2].trim();
+    }
+
+    // Patrón 2: "entre X y Y"
+    if (!sourceClassName || !targetClassName) {
+      const pattern2 = msg.match(
+        /(?:entre)\s+(?:la\s+)?(?:clase|tabla)?\s*([a-z0-9_][\w-]*)\s+y\s+(?:la\s+)?(?:clase|tabla)?\s*([a-z0-9_][\w-]*)/i,
+      );
+
+      if (pattern2) {
+        sourceClassName = pattern2[1].trim();
+        targetClassName = pattern2[2].trim();
+      }
+    }
+
+    console.log('[parseAddRelationCommand] Clases detectadas:', {
+      sourceClassName,
+      targetClassName,
+    });
+
+    // Normalizar variantes de multiplicidad que usuarios o OCR pueden escribir
+    // Ejemplos: '1...m', '1...N', '1..n' -> '1..*' ; '0...n' -> '0..*'
+    let msgNormalized = msg.replace(/…/g, '...');
+    msgNormalized = msgNormalized.replace(/\b1\.{2,}\s*[mMnN]\b/g, '1..*');
+    msgNormalized = msgNormalized.replace(/\b0\.{2,}\s*[mMnN]\b/g, '0..*');
+    msgNormalized = msgNormalized.replace(/\.{3,}/g, '..');
+    msgNormalized = msgNormalized.replace(/\b1\.{2,}\s*\*\b/g, '1..*');
+    msgNormalized = msgNormalized.replace(/\b0\.{2,}\s*\*\b/g, '0..*');
+
+    if (!sourceClassName || !targetClassName) {
+      return {
+        error:
+          'No pude identificar las clases para la relación. Usa el formato: "crea una [tipo] de [ClaseOrigen] a [ClaseDestino]"',
+      };
+    }
+
+    // --- Detectar multiplicidades explícitas cerca de los nombres de clase ---
+    const multiplicityPattern = /(1\.\.\*|1\.\.1|0\.\.1|0\.\.\*|\*)/;
+    let sourceMultiplicity: string | undefined = undefined;
+    let targetMultiplicity: string | undefined = undefined;
+
+    try {
+      const srcRegex = new RegExp(
+        sourceClassName +
+          '\\\\s*\\(?\\s*(' +
+          '1\\.\\.\\*|1\\.\\.1|0\\.\\.1|0\\.\\.\\*|\\*' +
+          ')\\s*\\)?',
+        'i',
+      );
+      const tgtRegex = new RegExp(
+        targetClassName +
+          '\\\\s*\\(?\\s*(' +
+          '1\\.\\.\\*|1\\.\\.1|0\\.\\.1|0\\.\\.\\*|\\*' +
+          ')\\s*\\)?',
+        'i',
+      );
+      const srcMatch = msgNormalized.match(srcRegex);
+      const tgtMatch = msgNormalized.match(tgtRegex);
+      if (srcMatch && srcMatch[1]) sourceMultiplicity = srcMatch[1];
+      if (tgtMatch && tgtMatch[1]) targetMultiplicity = tgtMatch[1];
+    } catch (e) {
+      // ignore regex errors
+    }
+
+    // Soporte frases comunes en español: "uno a muchos", "uno a uno", "cero o uno", "cero a muchos"
+    const normalized = this.normalize(msg);
+    if (!sourceMultiplicity && !targetMultiplicity) {
+      if (
+        normalized.includes('uno a muchos') ||
+        normalized.includes('uno a muchos')
+      ) {
+        sourceMultiplicity = '1..1';
+        targetMultiplicity = '1..*';
+      } else if (
+        normalized.includes('uno a uno') ||
+        normalized.includes('uno a uno')
+      ) {
+        sourceMultiplicity = '1..1';
+        targetMultiplicity = '1..1';
+      } else if (
+        normalized.includes('cero o uno') ||
+        normalized.includes('cero o uno')
+      ) {
+        sourceMultiplicity = '0..1';
+        targetMultiplicity = '0..1';
+      } else if (
+        normalized.includes('cero a muchos') ||
+        normalized.includes('cero a muchos')
+      ) {
+        sourceMultiplicity = '0..1';
+        targetMultiplicity = '0..*';
+      }
+    }
+    // Buscar las clases en el contexto
+    const sourceNode = context.nodes.find(
+      (n) => this.normalize(n.name) === this.normalize(sourceClassName),
+    );
+
+    const targetNode = context.nodes.find(
+      (n) => this.normalize(n.name) === this.normalize(targetClassName),
+    );
+
+    if (!sourceNode) {
+      return {
+        error: `No encontré la clase origen "${sourceClassName}". Clases disponibles: ${context.nodes.map((n) => n.name).join(', ')}`,
+      };
+    }
+
+    if (!targetNode) {
+      return {
+        error: `No encontré la clase destino "${targetClassName}". Clases disponibles: ${context.nodes.map((n) => n.name).join(', ')}`,
+      };
+    }
+
+    console.log('[parseAddRelationCommand] Resultado final:', {
+      from: sourceNode.name,
+      to: targetNode.name,
+      type: relationType,
+    });
+
+    return {
+      from: sourceNode.name,
+      to: targetNode.name,
+      type: relationType,
+      multiplicity:
+        sourceMultiplicity || targetMultiplicity
+          ? {
+              source: sourceMultiplicity,
+              target: targetMultiplicity,
+            }
+          : undefined,
+      sourceNode,
+      targetNode,
+    };
+  }
+
   private async handleUserMessage(
     message: string,
     context: DiagramContext,
     analysis: ReturnType<AiAssistantService['analyzeDiagramState']>,
   ): Promise<AssistantResponse> {
     const normalized = this.normalize(message);
+
+    // 🔍 DEBUG: Log para verificar contexto
+    console.log('[AI Assistant] Contexto recibido:', {
+      classCount: context.nodes.length,
+      edgeCount: context.edges.length,
+      classes: context.nodes.map((n) => n.name),
+    });
 
     const TUTORIAL_CONTEXT = {
       appName: 'Diagramador UML UAGRM',
@@ -511,6 +925,106 @@ export class AiAssistantService {
       };
     }
 
+    // 🔍 PREGUNTAS SOBRE CLASES EXISTENTES
+    if (
+      (normalized.includes('que') ||
+        normalized.includes('cuales') ||
+        normalized.includes('cuántas')) &&
+      (normalized.includes('clase') || normalized.includes('tabla'))
+    ) {
+      if (context.nodes.length === 0) {
+        return {
+          message:
+            '❌ **No hay clases en el diagrama actualmente.**\n\n¿Quieres que te ayude a crear una?',
+          contextualHelp: [
+            {
+              action: 'create_first_class',
+              description: 'Crear tu primera clase',
+              shortcut: 'Dime: "Crea una clase Usuario"',
+              priority: 'high',
+            },
+          ],
+          tips: [
+            '💡 Empieza con clases básicas como Usuario, Producto, Pedido',
+          ],
+        };
+      }
+
+      const classList = context.nodes
+        .map((n, i) => {
+          const attrs = n.attributes || [];
+          const methods = n.methods || [];
+          return `**${i + 1}. ${n.name}**\n   • Atributos: ${attrs.length > 0 ? attrs.join(', ') : '(ninguno)'}\n   • Métodos: ${methods.length > 0 ? methods.join(', ') : '(ninguno)'}`;
+        })
+        .join('\n\n');
+
+      return {
+        message: `📊 **Tienes ${context.nodes.length} clase(s) en el diagrama:**\n\n${classList}\n\n**Relaciones:** ${context.edges.length}\n\n¿Quieres agregar más atributos o crear nuevas clases?`,
+        contextualHelp: [
+          {
+            action: 'edit_class',
+            description: 'Editar una clase existente',
+            shortcut: 'Doble clic en la clase',
+            priority: 'high',
+          },
+          {
+            action: 'add_attributes',
+            description: 'Agregar atributos con IA',
+            shortcut: 'Dime: "agrega email a la clase Usuario"',
+            priority: 'high',
+          },
+        ],
+        tips: [
+          '✏️ Puedes editar cualquier clase con doble clic',
+          '🤖 O pedirme que agregue atributos: "agrega id:Long a Usuario"',
+        ],
+      };
+    }
+
+    // 🔍 INFORMACIÓN SOBRE CLASE ESPECÍFICA
+    const classNameMatch = message.match(
+      /(?:clase|tabla)\s+([a-z0-9_][\w-]*)/i,
+    );
+    if (
+      classNameMatch &&
+      (normalized.includes('que tiene') ||
+        normalized.includes('info') ||
+        normalized.includes('muestra'))
+    ) {
+      const targetName = classNameMatch[1].trim();
+      const targetNode = context.nodes.find(
+        (n) => this.normalize(n.name) === this.normalize(targetName),
+      );
+
+      if (!targetNode) {
+        return {
+          message: `❌ No encontré la clase "${targetName}".\n\n**Clases disponibles:**\n${context.nodes.map((n) => `• ${n.name}`).join('\n') || '(ninguna)'}`,
+          tips: ['Verifica el nombre exacto de la clase'],
+        };
+      }
+
+      const attrs = targetNode.attributes || [];
+      const methods = targetNode.methods || [];
+
+      return {
+        message: `📋 **Información de la clase "${targetNode.name}":**\n\n**Atributos (${attrs.length}):**\n${attrs.length > 0 ? attrs.map((a) => `  • ${a}`).join('\n') : '  (ninguno)'}\n\n**Métodos (${methods.length}):**\n${methods.length > 0 ? methods.map((m) => `  • ${m}`).join('\n') : '  (ninguno)'}\n\n¿Quieres agregar más atributos o métodos?`,
+        contextualHelp: [
+          {
+            action: 'edit_class',
+            description: `Editar ${targetNode.name}`,
+            shortcut: 'Doble clic en la clase',
+            priority: 'high',
+          },
+          {
+            action: 'add_attributes',
+            description: 'Agregar con IA',
+            shortcut: `"agrega email:String a ${targetNode.name}"`,
+            priority: 'high',
+          },
+        ],
+      };
+    }
+
     // ----- comandos de creación de clase -----
     if (normalized.includes('crear') || normalized.includes('crea')) {
       const parsed = this.parseCreateClassCommand(message);
@@ -555,6 +1069,198 @@ export class AiAssistantService {
             '2. Doble clic en la clase para editarla',
             '3. Personaliza atributos y métodos',
             '4. Crea otra clase para relacionarlas',
+          ],
+        };
+      }
+    }
+
+    // ----- comandos de edición de clase existente -----
+    if (
+      normalized.includes('agrega') ||
+      normalized.includes('añade') ||
+      normalized.includes('anade')
+    ) {
+      const editParsed = this.parseEditClassCommand(message, context);
+
+      if (editParsed?.error) {
+        return {
+          message: `❌ ${editParsed.error}`,
+          tips: [
+            'Verifica que la clase exista en el diagrama',
+            'Usa el nombre exacto de la clase',
+          ],
+        };
+      }
+
+      if (editParsed) {
+        const {
+          targetNodeId,
+          targetClassName,
+          newAttributes,
+          newMethods,
+          currentAttributes,
+          currentMethods,
+        } = editParsed;
+
+        // Garantizar arrays
+        const currAttrs = currentAttributes || [];
+        const currMethods = currentMethods || [];
+        const newAttrs = newAttributes || [];
+        const newMeths = newMethods || [];
+
+        // Combinar atributos/métodos existentes con nuevos (sin duplicar)
+        const existingAttrNames = new Set(
+          currAttrs.map((a) => a.split(':')[0].trim().toLowerCase()),
+        );
+        const filteredNewAttrs = newAttrs.filter(
+          (a) => !existingAttrNames.has(a.split(':')[0].trim().toLowerCase()),
+        );
+
+        const existingMethodNames = new Set(
+          currMethods.map((m) => m.split('(')[0].trim().toLowerCase()),
+        );
+        const filteredNewMethods = newMeths.filter(
+          (m) => !existingMethodNames.has(m.split('(')[0].trim().toLowerCase()),
+        );
+
+        const allAttributes = [...currAttrs, ...filteredNewAttrs];
+        const allMethods = [...currMethods, ...filteredNewMethods];
+
+        if (filteredNewAttrs.length === 0 && filteredNewMethods.length === 0) {
+          return {
+            message: `⚠️ Los atributos/métodos que intentas agregar ya existen en la clase "${targetClassName}".\n\n**Atributos actuales:**\n${currAttrs.join('\n') || '(ninguno)'}\n\n**Métodos actuales:**\n${currMethods.join('\n') || '(ninguno)'}`,
+            tips: [
+              'Los elementos ya existen',
+              'Intenta con nombres diferentes',
+            ],
+          };
+        }
+
+        const addedItems: string[] = [];
+        if (filteredNewAttrs.length > 0) {
+          addedItems.push(
+            `✅ **${filteredNewAttrs.length} atributo(s):** ${filteredNewAttrs.join(', ')}`,
+          );
+        }
+        if (filteredNewMethods.length > 0) {
+          addedItems.push(
+            `✅ **${filteredNewMethods.length} método(s):** ${filteredNewMethods.join(', ')}`,
+          );
+        }
+
+        return {
+          message: `✨ **¡Perfecto! Voy a actualizar la clase "${targetClassName}":**\n\n${addedItems.join('\n')}\n\n**Haz clic en "Aplicar cambios" abajo para actualizar el diagrama.**`,
+          suggestions: {
+            classes: [
+              {
+                name: targetClassName,
+                attributes: allAttributes,
+                methods: allMethods,
+              },
+            ],
+          },
+          // Añadir metadata custom para el frontend
+          contextualHelp: [
+            {
+              action: 'apply_edit',
+              description: 'Aplicar cambios a la clase',
+              shortcut: 'Botón "Aplicar cambios" abajo',
+              priority: 'high',
+            },
+          ],
+          tips: [
+            '🎯 Los cambios se aplicarán automáticamente al hacer clic',
+            '📝 Se agregaron solo los elementos nuevos',
+            '✏️ Siempre puedes editar manualmente con doble clic',
+            `🔧 nodeId=${targetNodeId}`, // Metadata para el frontend
+          ],
+          nextSteps: [
+            '1. Haz clic en "Aplicar cambios"',
+            '2. Verifica la clase actualizada en el diagrama',
+            '3. Agrega más elementos si lo necesitas',
+          ],
+        };
+      }
+    }
+
+    // ----- comandos de agregar relación -----
+    if (
+      (normalized.includes('crea') ||
+        normalized.includes('agrega') ||
+        normalized.includes('añade')) &&
+      (normalized.includes('relacion') ||
+        normalized.includes('asociacion') ||
+        normalized.includes('herencia') ||
+        normalized.includes('composicion') ||
+        normalized.includes('agregacion') ||
+        normalized.includes('dependencia'))
+    ) {
+      const relationParsed = this.parseAddRelationCommand(message, context);
+
+      if (relationParsed?.error) {
+        return {
+          message: `❌ ${relationParsed.error}`,
+          tips: [
+            'Usa el formato: "crea una [tipo] de [ClaseOrigen] a [ClaseDestino]"',
+            'Tipos: asociación, herencia, composición, agregación, dependencia',
+          ],
+        };
+      }
+
+      if (
+        relationParsed &&
+        relationParsed.from &&
+        relationParsed.to &&
+        relationParsed.type
+      ) {
+        const { from, to, type } = relationParsed;
+
+        // Mapear el tipo a nombre legible
+        const relationNames: Record<string, string> = {
+          assoc: 'Asociación',
+          inherit: 'Herencia',
+          comp: 'Composición',
+          aggr: 'Agregación',
+          dep: 'Dependencia',
+          'many-to-many': 'Muchos a Muchos',
+        };
+
+        const relationName = relationNames[type] || 'Asociación';
+
+        return {
+          message: `✨ **¡Perfecto! Voy a crear una relación de ${relationName}:**\n\n📍 **Origen:** ${from}\n📍 **Destino:** ${to}\n🔗 **Tipo:** ${relationName}\n\n**La relación se aplicará automáticamente.**`,
+          suggestions: {
+            relations: [
+              {
+                from,
+                to,
+                type,
+                multiplicity: relationParsed.multiplicity
+                  ? {
+                      source: relationParsed.multiplicity.source,
+                      target: relationParsed.multiplicity.target,
+                    }
+                  : undefined,
+              },
+            ],
+          },
+          contextualHelp: [
+            {
+              action: 'view_relation',
+              description: 'Ver la relación en el diagrama',
+              shortcut: 'La relación aparecerá automáticamente',
+              priority: 'high',
+            },
+          ],
+          tips: [
+            '✅ La relación se creó automáticamente',
+            '📝 Puedes editarla haciendo clic derecho en la línea',
+            '🔄 Tipos disponibles: asociación, herencia, composición, agregación, dependencia',
+          ],
+          nextSteps: [
+            '1. Verifica la relación en el diagrama',
+            '2. Agrega más relaciones si lo necesitas',
+            '3. Ajusta las cardinalidades si es necesario',
           ],
         };
       }

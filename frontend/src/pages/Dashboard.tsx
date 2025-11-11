@@ -133,6 +133,24 @@ function IconBell(props: React.SVGProps<SVGSVGElement>) {
   );
 }
 
+function IconTrash(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      {...props}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M3 6h18M8 6v12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V6M10 6V4a2 2 0 0 1 2-2h0a2 2 0 0 1 2 2v2"
+      />
+    </svg>
+  );
+}
+
 /* ===================== Create Project Modal ===================== */
 function CreateProjectModal({
   open,
@@ -242,9 +260,11 @@ function CreateProjectModal({
 function ProjectCard({
   p,
   onOpen,
+  onDelete,
 }: {
   p: Project;
   onOpen: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
   return (
     <div className="group relative rounded-2xl border border-gray-100 bg-white p-5 shadow-sm ring-1 ring-transparent transition hover:shadow-md hover:ring-indigo-100">
@@ -270,12 +290,21 @@ function ProjectCard({
       </div>
       <div className="mt-4 flex items-center justify-between text-xs text-gray-500">
         <span>Creado: {new Date(p.createdAt).toLocaleDateString()}</span>
-        <button
-          onClick={() => onOpen(p.id)}
-          className="rounded-lg px-3 py-1.5 text-indigo-600 hover:bg-indigo-50"
-        >
-          Abrir
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => onOpen(p.id)}
+            className="rounded-lg px-3 py-1.5 text-indigo-600 hover:bg-indigo-50"
+          >
+            Abrir
+          </button>
+          <button
+            onClick={() => onDelete(p.id)}
+            title="Eliminar proyecto"
+            className="rounded-lg px-2 py-1.5 text-red-600 hover:bg-red-50"
+          >
+            <IconTrash className="h-4 w-4" />
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -376,6 +405,27 @@ export default function Dashboard() {
     // bust cache del router para que el Editor siempre monte fresco
     const ts = Date.now();
     navigate(`/app/projects/${id}?t=${ts}`);
+  };
+
+  const handleDeleteProject = async (id: string) => {
+    const ok = window.confirm(
+      "¿Eliminar este proyecto? Esta acción no se puede deshacer."
+    );
+    if (!ok) return;
+    try {
+      await api.delete(`/projects/${id}`, {
+        headers: effectiveToken
+          ? { Authorization: `Bearer ${effectiveToken}` }
+          : undefined,
+      });
+      setProjects((prev) => (prev ? prev.filter((x) => x.id !== id) : []));
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.message ||
+        err?.message ||
+        "No se pudo eliminar el proyecto";
+      window.alert(msg);
+    }
   };
 
   // === Socket: notificaciones (owner) ===
@@ -634,7 +684,12 @@ export default function Dashboard() {
           ) : (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {filtered.map((p) => (
-                <ProjectCard key={p.id} p={p} onOpen={openProject} />
+                <ProjectCard
+                  key={p.id}
+                  p={p}
+                  onOpen={openProject}
+                  onDelete={handleDeleteProject}
+                />
               ))}
             </div>
           )}

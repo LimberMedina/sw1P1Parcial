@@ -6,6 +6,9 @@ import {
   Post,
   Req,
   UseGuards,
+  Delete,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { ProjectsService } from './projects.service';
@@ -32,5 +35,13 @@ export class ProjectsController {
   async getOne(@Req() req: any, @Param('id') id: string) {
     const userId: string = req.user.id;
     return this.projects.getForUser(userId, id);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async remove(@Req() req: any, @Param('id') id: string) {
+    const userId: string = req.user.id;
+    await this.projects.deleteProject(userId, id);
+    return;
   }
 }

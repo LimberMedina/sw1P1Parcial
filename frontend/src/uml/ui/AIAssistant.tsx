@@ -7,6 +7,7 @@ import {
   Lightbulb,
   CheckCircle,
   Eye,
+  Upload,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { Graph } from "@antv/x6";
@@ -21,7 +22,12 @@ interface AIMessage {
   timestamp: Date;
   suggestions?: {
     classes?: Array<{ name: string; attributes: string[]; methods: string[] }>;
-    relations?: Array<{ from: string; to: string; type: string }>;
+    relations?: Array<{
+      from: string;
+      to: string;
+      type: string;
+      multiplicity?: { source?: string; target?: string };
+    }>;
   };
   tips?: string[];
   nextSteps?: string[];
@@ -40,7 +46,13 @@ interface AIAssistantProps {
     attributes: string[],
     methods: string[]
   ) => void;
-  onAddRelation: (from: string, to: string, type: string) => void; // type usa keys del editor: "assoc" | "inherit" | ...
+  // onAddRelation ahora acepta multiplicidad opcional en la forma { source?: string, target?: string }
+  onAddRelation: (
+    from: string,
+    to: string,
+    type: string,
+    multiplicity?: { source?: string; target?: string }
+  ) => void; // type usa keys del editor: "assoc" | "inherit" | ...
   onToolChange?: (tool: Tool) => void;
   currentTool?: Tool;
   canEdit?: boolean;
@@ -361,6 +373,14 @@ export default function AIAssistant({
       const context = getDiagramContext();
       const analysis = analyzeDiagramState();
 
+      // 🔍 DEBUG: Ver qué estamos enviando
+      console.log("[AIAssistant] Enviando al backend:", {
+        nodeCount: context.nodes.length,
+        edgeCount: context.edges.length,
+        nodeNames: context.nodes.map((n) => n.name),
+        message: userMessage.content,
+      });
+
       const res = await fetch(backendUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -380,6 +400,14 @@ export default function AIAssistant({
 
       if (res.ok) {
         const aiResponse = await res.json();
+
+        // 🔍 DEBUG: Ver qué respuesta llega
+        console.log("[AIAssistant] Respuesta del backend:", {
+          message: aiResponse.message?.substring(0, 100),
+          hasSuggestions: !!aiResponse.suggestions,
+          classCount: aiResponse.suggestions?.classes?.length || 0,
+          tips: aiResponse.tips?.length || 0,
+        });
 
         const aiMessage: AIMessage = {
           id: (Date.now() + 1).toString(),
@@ -405,7 +433,49 @@ export default function AIAssistant({
           .normalize("NFD")
           .replace(/\p{Diacritic}/gu, "");
 
+        // 🔥 DETECTAR EDICIÓN DE CLASE (agregar atributos/métodos)
         if (
+          canEdit &&
+          aiMessage.suggestions?.classes?.length &&
+          (normalized.includes("agrega") ||
+            normalized.includes("añade") ||
+            normalized.includes("anade")) &&
+          (normalized.includes("atributo") ||
+            normalized.includes("metodo") ||
+            normalized.includes("método"))
+        ) {
+          if (aiMessage.suggestions.classes.length > 0) {
+            const editClass = aiMessage.suggestions.classes[0];
+            applyEditClass(
+              editClass.name,
+              editClass.attributes,
+              editClass.methods
+            );
+          }
+        }
+        // 🔥 DETECTAR CREACIÓN DE RELACIÓN
+        else if (
+          canEdit &&
+          aiMessage.suggestions?.relations?.length &&
+          (normalized.includes("crea") ||
+            normalized.includes("crear") ||
+            normalized.includes("agrega") ||
+            normalized.includes("añade") ||
+            normalized.includes("anade")) &&
+          (normalized.includes("relacion") ||
+            normalized.includes("asociacion") ||
+            normalized.includes("herencia") ||
+            normalized.includes("composicion") ||
+            normalized.includes("agregacion") ||
+            normalized.includes("dependencia"))
+        ) {
+          if (aiMessage.suggestions.relations.length > 0) {
+            const relation = aiMessage.suggestions.relations[0];
+            applySuggestion("relation", relation, { silentToast: false });
+          }
+        }
+        // AUTO-APLICAR creación de clase nueva
+        else if (
           canEdit &&
           aiMessage.suggestions?.classes?.length &&
           (normalized.includes("crear clase") ||
@@ -591,9 +661,212 @@ export default function AIAssistant({
     if (type === "relation" && onAddRelation) {
       // IMPORTANTE: el editor espera keys: "assoc" | "inherit" | "comp" | "aggr" | "dep" | "many-to-many"
       const relType = (data.type || "assoc").toLowerCase();
-      onAddRelation(data.from, data.to, relType);
+      // multiplicidad (opcional) puede venir de las sugerencias del backend
+      const multiplicity = data?.multiplicity
+        ? {
+            source: data.multiplicity.source,
+            target: data.multiplicity.target,
+          }
+        : undefined;
+      onAddRelation(data.from, data.to, relType, multiplicity);
       if (!opts.silentToast)
         toast.success(`✅ Relación ${data.from} → ${data.to} creada`);
+    }
+  };
+
+  // -------------------- EDITAR CLASE EXISTENTE --------------------
+  const applyEditClass = (
+    className: string,
+    newAttributes: string[],
+    newMethods: string[]
+  ) => {
+    if (!canEdit) {
+      toast.error("No tienes permisos para editar este diagrama");
+      return;
+    }
+
+    if (!graph) {
+      toast.error("No hay grafo disponible");
+      return;
+    }
+
+    // Buscar el nodo por nombre de clase
+    const nodes = graph.getNodes();
+    const targetNode = nodes.find((node) => {
+      const data = node.getData();
+      const nodeName = data?.name || "";
+      return nodeName.toLowerCase().trim() === className.toLowerCase().trim();
+    });
+
+    if (!targetNode) {
+      toast.error(`No encontré la clase "${className}" en el diagrama`);
+      return;
+    }
+
+    // Obtener datos actuales
+    const currentData = targetNode.getData() || {};
+    const currentAttrs = currentData.attributes || [];
+    const currentMethods = currentData.methods || [];
+
+    // Actualizar con los nuevos datos
+    const updatedData = {
+      ...currentData,
+      attributes: newAttributes,
+      methods: newMethods,
+    };
+
+    // Aplicar cambios al nodo
+    targetNode.setData(updatedData, { overwrite: true });
+
+    // Actualizar atributos visuales
+    targetNode.setAttrs({
+      name: { text: className },
+      attrs: { text: newAttributes.join("\n") },
+      methods: { text: newMethods.join("\n") },
+    });
+
+    // Forzar redimensionamiento (si está disponible la función en el contexto del Editor)
+    // La función resizeUmlClass está definida en Editor.tsx, necesitamos acceder a ella
+    // Por ahora, forzamos un re-render básico
+    const event = new CustomEvent("uml:class:updated", {
+      detail: { nodeId: targetNode.id, node: targetNode },
+    });
+    window.dispatchEvent(event);
+
+    const addedCount =
+      newAttributes.length -
+      currentAttrs.length +
+      (newMethods.length - currentMethods.length);
+
+    toast.success(
+      `✅ Clase "${className}" actualizada (${addedCount} elemento(s) agregado(s))`
+    );
+  };
+
+  // -------------------- IMPORTAR DESDE IMAGEN --------------------
+  const handleImportFromImage = async (file: File) => {
+    if (!canEdit) {
+      toast.error("No tienes permisos para editar este diagrama");
+      return;
+    }
+
+    if (!graph) {
+      toast.error("No hay grafo disponible");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("image", file);
+
+    const toastId = toast.loading("🔍 Escaneando diagrama...");
+
+    try {
+      const res = await fetch("/api/ai/scan-diagram", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text();
+        throw new Error(
+          errorText || "Error al escanear la imagen del diagrama"
+        );
+      }
+
+      const aiResponse = await res.json();
+
+      console.log("[AIAssistant] 📸 Scan de imagen completado:", {
+        message: aiResponse.message?.substring(0, 100),
+        classCount: aiResponse.suggestions?.classes?.length || 0,
+        relationCount: aiResponse.suggestions?.relations?.length || 0,
+      });
+
+      toast.dismiss(toastId);
+
+      // Agregar mensaje del asistente con las sugerencias
+      const scanMessage: AIMessage = {
+        id: Date.now().toString(),
+        type: "assistant",
+        content: aiResponse.message || "✨ Diagrama detectado desde imagen",
+        suggestions: aiResponse.suggestions,
+        tips: aiResponse.tips,
+        nextSteps: aiResponse.nextSteps,
+        timestamp: new Date(),
+      };
+
+      setMessages((prev) => [...prev, scanMessage]);
+
+      // Confirmar con el usuario
+      const classCount = aiResponse.suggestions?.classes?.length || 0;
+      const relationCount = aiResponse.suggestions?.relations?.length || 0;
+
+      if (classCount === 0) {
+        toast.error("No se detectaron clases en la imagen");
+        return;
+      }
+
+      const shouldImport = window.confirm(
+        `🎨 Diagrama detectado:\n\n` +
+          `✓ ${classCount} clases detectadas\n` +
+          `✓ ${relationCount} relaciones\n\n` +
+          `¿Deseas importar este diagrama?\n\n` +
+          `Presiona "Aceptar" para continuar.`
+      );
+
+      if (!shouldImport) {
+        toast("Importación cancelada", { icon: "ℹ️" });
+        return;
+      }
+
+      // Aplicar todas las clases
+      const classes = aiResponse.suggestions?.classes || [];
+      classes.forEach((cls: any) => {
+        applySuggestion("class", cls, { silentToast: true });
+      });
+
+      toast.success(`✅ ${classCount} clases creadas`);
+
+      // Aplicar relaciones después de un delay
+      setTimeout(() => {
+        const relations = aiResponse.suggestions?.relations || [];
+        relations.forEach((rel: any) => {
+          applySuggestion("relation", rel, { silentToast: true });
+        });
+
+        if (relationCount > 0) {
+          toast.success(`✅ ${relationCount} relaciones creadas`);
+        }
+
+        // Centrar vista
+        setTimeout(() => {
+          if (graph) {
+            graph.centerContent();
+            graph.zoomToFit({ padding: 50, maxScale: 1 });
+          }
+        }, 300);
+      }, 800);
+
+      toast.success("🎉 ¡Diagrama importado exitosamente!", {
+        duration: 4000,
+      });
+    } catch (error: any) {
+      console.error("[AIAssistant] ❌ Error al importar imagen:", error);
+      toast.dismiss(toastId);
+      toast.error(error.message || "Error al procesar la imagen");
+    }
+  };
+
+  // Handler para el input file
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleImportFromImage(file);
+      // Resetear el input para permitir seleccionar el mismo archivo de nuevo
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
   };
 
@@ -983,6 +1256,23 @@ export default function AIAssistant({
             {/* Input + sugerencias rápidas */}
             <div className="p-4 border-t border-gray-200">
               <div className="flex gap-2 mb-2">
+                {/* Botón para importar imagen */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!canEdit || isLoading}
+                  className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 disabled:opacity-50 disabled:cursor-not-allowed text-white p-2 rounded-xl transition-all duration-200"
+                  title="Importar diagrama desde imagen"
+                >
+                  <Upload className="h-5 w-5" />
+                </button>
+
                 <input
                   type="text"
                   value={inputValue}
